@@ -3,19 +3,13 @@ Residual Pyramid Module for RAG Daily Plugin.
 
 Implements multi-level semantic residual analysis using Gram-Schmidt orthogonalization.
 Provides hierarchical vector decomposition for enhanced semantic retrieval.
+
+uses Rust vector_db for high-performance operations.
 """
 
-import numpy as np
-from typing import Dict, List, Optional, Tuple
-from scipy.linalg import norm
 import logging
-
-from .math_utils import (
-    normalize_vector,
-    cosine_similarity,
-    dot_product,
-    orthogonalize_vectors,
-)
+from typing import Dict, List, Optional, Any
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -26,47 +20,31 @@ class PyramidLevel:
     def __init__(
         self,
         level: int,
-        residual: np.ndarray,
-        energy: float,
-        energy_ratio: float,
+        tags: List[Dict],
+        projection_magnitude: float,
+        residual_magnitude: float,
+        residual_energy_ratio: float,
+        energy_explained: float,
+        handshake_features: Optional[Dict] = None,
     ):
         self.level = level
-        self.residual = residual  # Residual vector at this level
-        self.energy = energy  # Energy (magnitude) of residual
-        self.energy_ratio = energy_ratio  # Ratio to total energy
+        self.tags = tags  # List of tag info with similarity, contribution, handshake
+        self.projection_magnitude = projection_magnitude
+        self.residual_magnitude = residual_magnitude
+        self.residual_energy_ratio = residual_energy_ratio
+        self.energy_explained = energy_explained
+        self.handshake_features = handshake_features
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
         return {
             "level": self.level,
-            "residual": self.residual.tolist() if isinstance(self.residual, np.ndarray) else self.residual,
-            "energy": self.energy,
-            "energy_ratio": self.energy_ratio,
-        }
-
-
-class HandshakeFeature:
-    """Features extracted from handshake analysis."""
-
-    def __init__(
-        self,
-        domain: int,
-        direction: float,
-        cross_product: float,
-        resonance: float,
-    ):
-        self.domain = domain  # Which semantic domain
-        self.direction = direction  # Direction cosine
-        self.cross_product = cross_product  # Cross product magnitude
-        self.resonance = resonance  # Resonance score
-
-    def to_dict(self) -> Dict:
-        """Convert to dictionary."""
-        return {
-            "domain": self.domain,
-            "direction": self.direction,
-            "cross_product": self.cross_product,
-            "resonance": self.resonance,
+            "tags": self.tags,
+            "projection_magnitude": float(self.projection_magnitude),
+            "residual_magnitude": float(self.residual_magnitude),
+            "residual_energy_ratio": float(self.residual_energy_ratio),
+            "energy_explained": float(self.energy_explained),
+            "handshake_features": self.handshake_features,
         }
 
 
@@ -75,389 +53,661 @@ class ResidualPyramid:
     Residual Pyramid for multi-level semantic analysis.
 
     Features:
-    - Gram-Schmidt orthogonal projection
-    - Multi-level residual decomposition
+    - Gram-Schmidt orthogonal projection using Rust vector_db
+    - Multi-level residual decomposition with iterative search
     - Handshake feature extraction
     - Energy-based level selection
     """
 
-    def __init__(
-        self,
-        max_levels: int = 3,
-        top_k: int = 10,
-        min_energy_ratio: float = 0.1,
-        dimension: int = 1024,
+    def __init__(self, tag_index, db, config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the residual pyramid.
 
         Args:
-            max_levels: Maximum pyramid levels (default: 3)
-            top_k: Top k items to retrieve at each level (default: 10)
-            min_energy_ratio: Minimum energy ratio to continue decomposition (default: 0.1)
-            dimension: Vector dimension (default: 1024)
+            tag_index: VexusIndex instance for vector search and Rust operations
+            db: Database connection for fetching tag details
+            config: Configuration dictionary
         """
-        self.max_levels = max_levels
-        self.top_k = top_k
-        self.min_energy_ratio = min_energy_ratio
-        self.dimension = dimension
+        self.tag_index = tag_index
+        self.db = db
+        default_config = {
+            'max_levels': 3,
+            'top_k': 10,
+            'min_energy_ratio': 0.1,
+            'dimension': 3072
+        }
+        if config is not None:
+            default_config.update(config)
 
-        # Storage for analysis results
-        self.levels: List[PyramidLevel] = []
-        self.orthogonal_basis: List[np.ndarray] = []
-        self.handshake_features: List[HandshakeFeature] = []
+        # 最终配置
+        self.config = default_config
 
-    def analyze(
-        self,
-        query_vector: np.ndarray,
-        tags: Optional[List[Dict]] = None,
-    ) -> Dict[str, any]:
+    def analyze(self, query_vector: np.ndarray, tags: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """
         Analyze a query vector using the residual pyramid.
 
+        Iteratively searches for tags at each level using the current residual,
+        then computes orthogonal projection to find the next residual.
+
         Args:
-            query_vector: Input query vector
-            tags: Optional list of tags with vectors for orthogonal basis
+            query_vector: Input query vector (numpy array or list)
+            tags: Optional list of tags with vectors. If provided, uses these directly
+                  instead of searching. Each tag should be a dict with 'id', 'name',
+                  and 'vector' keys.
 
         Returns:
-            Analysis results dictionary
+            Analysis results dictionary with levels, energy, and features
         """
         self.levels.clear()
-        self.orthogonal_basis.clear()
-        self.handshake_features.clear()
+        self.total_explained_energy = 0.0
 
-        # Initialize
-        current_residual = normalize_vector(query_vector.copy())
-        total_energy = norm(current_residual)
+        # Convert to numpy array and ensure float32
+        if isinstance(query_vector, list):
+            query_vector = np.array(query_vector, dtype=np.float32)
+        elif query_vector.dtype != np.float32:
+            query_vector = query_vector.astype(np.float32)
 
-        # Extract tag vectors if provided
-        tag_vectors = []
-        if tags:
-            for tag in tags:
-                vec = tag.get("vector")
-                if vec is not None:
-                    if isinstance(vec, list):
-                        vec = np.array(vec)
-                    tag_vectors.append(vec)
+        # Calculate original energy
+        original_magnitude = self._magnitude(query_vector)
+        original_energy = original_magnitude ** 2
 
-        # Build orthogonal basis from tags
-        if tag_vectors:
-            self.orthogonal_basis = orthogonalize_vectors(tag_vectors[:self.top_k])
+        if original_energy < 1e-12:
+            return self._empty_result()
 
-        # Decompose through levels
-        for level in range(self.max_levels):
-            energy = norm(current_residual)
-            energy_ratio = energy / total_energy if total_energy > 0 else 0
+        current_residual = query_vector.copy()
 
-            # Create pyramid level
-            pyramid_level = PyramidLevel(
-                level=level,
-                residual=current_residual.copy(),
-                energy=float(energy),
-                energy_ratio=float(energy_ratio),
-            )
-            self.levels.append(pyramid_level)
+        for level in range(self.config["max_levels"]):
+            # 1. Get tags - either from provided list or search
+            if tags is not None and level == 0:
+                # Use provided tags directly (only for first level)
+                raw_tags = tags[:self.config["top_k"]]
+            else:
+                # Search for tags using current residual
+                residual_bytes = self._vector_to_bytes(current_residual)
+                tag_results = self._search_tags(residual_bytes)
 
-            # Check if we should stop
-            if energy_ratio < self.min_energy_ratio:
-                logger.debug(f"[ResidualPyramid] Stopped at level {level}, energy ratio: {energy_ratio:.3f}")
+                if not tag_results:
+                    logger.debug(f"[ResidualPyramid] No tags found at level {level}")
+                    break
+
+                # Get tag vectors from database
+                tag_ids = [r.id for r in tag_results]
+                raw_tags = self._get_tag_vectors(tag_ids)
+
+            if not raw_tags:
                 break
 
-            # Compute orthogonal projection if we have basis
-            if self.orthogonal_basis:
-                current_residual = self._compute_orthogonal_projection(
-                    current_residual,
-                    self.orthogonal_basis
-                )
-
-        # Compute handshake features
-        if tags and self.orthogonal_basis:
-            self.handshake_features = self._compute_handshakes(
-                query_vector,
-                tags[:self.top_k],
+            # 3. Compute orthogonal projection using Rust
+            projection_result = self._compute_orthogonal_projection(
+                current_residual, raw_tags
             )
+
+            # 4. Calculate energy metrics
+            residual_magnitude = self._magnitude(
+                np.array(projection_result.residual, dtype=np.float32)
+            )
+            residual_energy = residual_magnitude ** 2
+            current_energy = self._magnitude(current_residual) ** 2
+
+            energy_explained_by_level = max(0, current_energy - residual_energy) / original_energy
+
+            # 5. Compute handshake features
+            handshake_result = self._compute_handshakes(current_residual, raw_tags)
+            handshake_features = self._analyze_handshakes(handshake_result)
+
+            # 6. Build tag info list
+            tag_info_list = []
+            for i, tag in enumerate(raw_tags):
+                # Find corresponding search result if available
+                if tags is not None and level == 0:
+                    # Using provided tags - compute similarity manually
+                    tag_vec = np.frombuffer(tag["vector"], dtype=np.float32)
+                    similarity = float(np.dot(
+                        current_residual.astype(np.float64),
+                        tag_vec.astype(np.float64)
+                    ) / (
+                        np.linalg.norm(current_residual) * np.linalg.norm(tag_vec) + 1e-9
+                    ))
+                else:
+                    # Using search results
+                    search_res = next((r for r in tag_results if r.id == tag["id"]), None)
+                    similarity = search_res.score if search_res else 0.0
+
+                contribution = projection_result.basis_coefficients[i] if i < len(projection_result.basis_coefficients) else 0.0
+                handshake_mag = handshake_result.magnitudes[i] if i < len(handshake_result.magnitudes) else 0.0
+
+                tag_info_list.append({
+                    "id": tag["id"],
+                    "name": tag.get("name", ""),
+                    "similarity": float(similarity),
+                    "contribution": float(contribution),
+                    "handshake_magnitude": float(handshake_mag),
+                })
+
+            # 7. Create pyramid level
+            pyramid_level = PyramidLevel(
+                level=level,
+                tags=tag_info_list,
+                projection_magnitude=self._magnitude(
+                    np.array(projection_result.projection, dtype=np.float32)
+                ),
+                residual_magnitude=residual_magnitude,
+                residual_energy_ratio=residual_energy / original_energy,
+                energy_explained=energy_explained_by_level,
+                handshake_features=handshake_features,
+            )
+            self.levels.append(pyramid_level)
+            self.total_explained_energy += energy_explained_by_level
+
+            # Update residual for next iteration
+            current_residual = np.array(projection_result.residual, dtype=np.float32)
+
+            # 8. Check energy threshold
+            if (residual_energy / original_energy) < self.config["min_energy_ratio"]:
+                logger.debug(
+                    f"[ResidualPyramid] Stopped at level {level}, "
+                    f"energy ratio: {residual_energy / original_energy:.3f}"
+                )
+                break
+
+        self.final_residual = current_residual
+        self.features = self._extract_pyramid_features()
 
         return self._compile_results()
 
+    def _search_tags(self, query_bytes: bytes) -> List[Any]:
+        """Search for tags using the VexusIndex."""
+        if self.tag_index is None:
+            return []
+
+        try:
+            return self.tag_index.search(query_bytes, self.config["top_k"])
+        except Exception as e:
+            logger.warning(f"[ResidualPyramid] Search failed: {e}")
+            return []
+
+    def _get_tag_vectors(self, tag_ids: List[int]) -> List[Dict]:
+        """Fetch tag vectors from the database."""
+        if self.db is None:
+            return []
+
+        placeholders = ",".join(["?" for _ in tag_ids])
+        query = f"SELECT id, name, vector FROM tags WHERE id IN ({placeholders})"
+
+        try:
+            cursor = self.db.execute(query, tag_ids)
+            rows = cursor.fetchall()
+
+            result = []
+            for row in rows:
+                tag_id, name, vector_blob = row
+                if vector_blob:
+                    result.append({
+                        "id": tag_id,
+                        "name": name,
+                        "vector": vector_blob,
+                    })
+            return result
+        except Exception as e:
+            logger.warning(f"[ResidualPyramid] Failed to fetch tags: {e}")
+            return []
+
     def _compute_orthogonal_projection(
-        self,
-        vector: np.ndarray,
-        basis: List[np.ndarray],
-    ) -> np.ndarray:
+        self, vector: np.ndarray, tags: List[Dict]
+    ) -> Any:
         """
-        Compute orthogonal projection using Gram-Schmidt.
+        Compute orthogonal projection using Rust vector_db.
 
-        Projects the vector onto the orthogonal complement of the basis.
-
-        Args:
-            vector: Input vector
-            basis: List of orthogonal basis vectors
-
-        Returns:
-            Residual vector (orthogonal component)
+        Uses Gram-Schmidt orthogonalization to project the vector
+        onto the subspace spanned by the tag vectors.
         """
-        residual = vector.copy()
+        if self.tag_index is None:
+            # Fallback to Python implementation
+            raise RuntimeError("tag_index not initiallized")
+        flattened_tags = self._flatten_tag_vectors(tags)
 
-        for basis_vec in basis:
-            # Subtract projection onto each basis vector
-            projection_coeff = dot_product(residual, basis_vec)
-            residual = residual - (projection_coeff * basis_vec)
+        vector_bytes = self._vector_to_bytes(vector)
 
-        return normalize_vector(residual) if norm(residual) > 1e-10 else residual
+        result = self.tag_index.compute_orthogonal_projection(
+            vector_bytes, flattened_tags, len(tags)
+        )
+        return result
+
 
     def _compute_handshakes(
-        self,
-        query: np.ndarray,
-        tags: List[Dict],
-    ) -> List[HandshakeFeature]:
+        self, vector: np.ndarray, tags: List[Dict]
+    ) -> Any:
         """
-        Compute handshake features between query and tags.
+        Compute handshake features using Rust vector_db.
 
-        Handshake features capture the semantic relationship between
-        query vectors and tag vectors in the orthogonalized space.
-
-        Args:
-            query: Query vector
-            tags: List of tags with vectors
-
-        Returns:
-            List of handshake features
+        Handshakes measure the directional difference between the query
+        and each tag vector.
         """
-        features = []
-        normalized_query = normalize_vector(query)
+        if self.tag_index is None:
+            raise RuntimeError("tag_index not initiallized")
 
-        for i, tag in enumerate(tags):
-            vec = tag.get("vector")
-            if vec is None:
-                continue
+        flattened_tags = self._flatten_tag_vectors(tags)
+        vector_bytes = self._vector_to_bytes(vector)
 
-            if isinstance(vec, list):
-                vec = np.array(vec)
+        result = self.tag_index.compute_handshakes(
+            vector_bytes, flattened_tags, len(tags)
+        )
 
-            normalized_vec = normalize_vector(vec)
+        # 结构化 directions: 扁平数组 -> 每个tag一个方向向量
+        dim = self._dim
+        n = len(tags)
+        structured_directions = []
 
-            # Direction cosine
-            direction = cosine_similarity(normalized_query, normalized_vec)
+        for i in range(n):
+            start = i * dim
+            end = start + dim
+            structured_directions.append(result.directions[start:end])
 
-            # Cross product magnitude (2D approximation)
-            cross = self._compute_cross_magnitude(normalized_query, normalized_vec)
+        # 保留7位小数
+        rounded_magnitudes = [round(m, 7) for m in result.magnitudes]
+        rounded_directions = [
+            [round(x, 7) for x in dir_vec]
+            for dir_vec in structured_directions
+        ]
 
-            # Resonance (combined metric)
-            resonance = (direction + (1.0 - cross)) / 2.0
+        # 包装成新对象返回
+        class StructuredHandshakeResult:
+            def __init__(self, magnitudes, directions):
+                self.magnitudes = magnitudes
+                self.directions = directions
 
-            feature = HandshakeFeature(
-                domain=i,
-                direction=float(direction),
-                cross_product=float(cross),
-                resonance=float(resonance),
-            )
-            features.append(feature)
+        return StructuredHandshakeResult(rounded_magnitudes, rounded_directions)
 
-        return features
-
-    def _compute_cross_magnitude(
-        self,
-        vec1: np.ndarray,
-        vec2: np.ndarray,
-    ) -> float:
-        """
-        Compute cross product magnitude as a measure of orthogonality.
-
-        Args:
-            vec1: First vector
-            vec2: Second vector
-
-        Returns:
-            Cross product magnitude (normalized)
-        """
-        # For high-dimensional vectors, we use sin of angle
-        cos_sim = cosine_similarity(vec1, vec2)
-        sin_sim = np.sqrt(1.0 - min(1.0, cos_sim ** 2))
-        return float(sin_sim)
-
-    def _analyze_handshakes(
-        self,
-        handshakes: List[HandshakeFeature],
-        dim: int,
-    ) -> Dict[str, any]:
+    def _analyze_handshakes(self, handshake_result: Any) -> Dict:
         """
         Analyze handshake features to extract semantic patterns.
 
-        Args:
-            handshakes: List of handshake features
-            dim: Dimension to analyze
-
-        Returns:
-            Analysis results
+        Computes:
+        - direction_coherence: Consistency of deviation directions
+        - pattern_strength: Similarity between tag deviations
+        - novelty_signal: How novel the query is
+        - noise_signal: How random the deviations are
         """
-        if not handshakes:
-            return {}
+        n = len(handshake_result.magnitudes)
+        if n == 0:
+            return None
 
-        # Sort by resonance
-        sorted_handshakes = sorted(handshakes, key=lambda h: h.resonance, reverse=True)
+        # directions 已经是结构化的 [[x,y,z], [x,y,z], ...]
+        directions = [np.array(d, dtype=np.float64) for d in handshake_result.directions]
 
-        # Find dominant domains
-        dominant = [h for h in sorted_handshakes if h.resonance > 0.7]
+        # Calculate average direction
+        avg_direction = np.mean(directions, axis=0)
+        direction_coherence = float(np.linalg.norm(avg_direction))
 
-        # Compute statistics
-        directions = [h.direction for h in handshakes]
-        cross_products = [h.cross_product for h in handshakes]
-        resonances = [h.resonance for h in handshakes]
+        # Calculate pairwise similarity (sample first 5)
+        pairwise_sims = []
+        limit = min(n, 5)
+        for i in range(limit):
+            for j in range(i + 1, limit):
+                sim = abs(np.dot(directions[i], directions[j]))
+                pairwise_sims.append(sim)
+
+        avg_pairwise_sim = float(np.mean(pairwise_sims)) if pairwise_sims else 0.0
 
         return {
-            "dominant_domains": [{"domain": h.domain, "resonance": h.resonance} for h in dominant[:5]],
-            "avg_direction": float(np.mean(directions)) if directions else 0,
-            "avg_cross_product": float(np.mean(cross_products)) if cross_products else 0,
-            "avg_resonance": float(np.mean(resonances)) if resonances else 0,
-            "max_resonance": float(np.max(resonances)) if resonances else 0,
-            "std_resonance": float(np.std(resonances)) if resonances else 0,
+            "direction_coherence": direction_coherence,
+            "pattern_strength": avg_pairwise_sim,
+            "novelty_signal": direction_coherence,
+            "noise_signal": (1.0 - direction_coherence) * (1.0 - avg_pairwise_sim),
         }
 
-    def _compile_results(self) -> Dict[str, any]:
+    def _extract_pyramid_features(self) -> Dict:
         """
-        Compile analysis results into a structured output.
+        Extract comprehensive features from the pyramid analysis.
 
         Returns:
-            Dictionary with all analysis results
+            Dictionary with depth, coverage, novelty, coherence, and activation scores
         """
-        handshake_analysis = self._analyze_handshakes(
-            self.handshake_features,
-            self.dimension
-        )
+        if not self.levels:
+            return {
+                "depth": 0,
+                "coverage": 0.0,
+                "novelty": 1.0,
+                "coherence": 0.0,
+                "tag_memo_activation": 0.0,
+                "expansion_signal": 1.0,
+            }
+
+        level0 = self.levels[0]
+        handshake = level0.handshake_features
+
+        # Coverage: total explained energy
+        coverage = min(1.0, self.total_explained_energy)
+
+        # Coherence: pattern strength from first level
+        coherence = handshake["pattern_strength"] if handshake else 0.0
+
+        # Novelty: residual ratio + directional novelty
+        residual_ratio = 1.0 - coverage
+        directional_novelty = handshake["novelty_signal"] if handshake else 0.0
+        novelty = (residual_ratio * 0.7) + (directional_novelty * 0.3)
 
         return {
+            "depth": len(self.levels),
+            "coverage": coverage,
+            "novelty": novelty,
+            "coherence": coherence,
+            "tag_memo_activation": coverage * coherence * (1.0 - (handshake["noise_signal"] if handshake else 0.0)),
+            "expansion_signal": novelty,
+        }
+
+    def _flatten_tag_vectors(self, tags: List[Dict]) -> bytes:
+        """Flatten tag vectors into a single bytes buffer for Rust."""
+        dim = self._dim
+        n = len(tags)
+        flattened = np.zeros(n * dim, dtype=np.float32)
+
+        for i, tag in enumerate(tags):
+            vec_bytes = tag["vector"]
+            vec = np.frombuffer(vec_bytes, dtype=np.float32)
+            if len(vec) != dim:
+                if len(vec) < dim:
+                    padded = np.zeros(dim, dtype=np.float32)
+                    padded[:len(vec)] = vec
+                    vec = padded
+                else:
+                    vec = vec[:dim]
+            start = i * dim
+            flattened[start:start + dim] = vec
+
+        return flattened.tobytes()
+
+    def _vector_to_bytes(self, vector: np.ndarray) -> bytes:
+        """Convert numpy vector to bytes for Rust."""
+        if vector.dtype != np.float32:
+            vector = vector.astype(np.float32)
+        return vector.tobytes()
+
+    def _magnitude(self, vector: np.ndarray) -> float:
+        """Calculate L2 magnitude of a vector."""
+        return float(np.linalg.norm(vector))
+
+    def _compile_results(self) -> Dict[str, Any]:
+        """Compile analysis results into a structured output."""
+        return {
             "levels": [level.to_dict() for level in self.levels],
-            "handshake_features": [f.to_dict() for f in self.handshake_features],
-            "handshake_analysis": handshake_analysis,
-            "orthogonal_basis_size": len(self.orthogonal_basis),
-            "total_levels": len(self.levels),
-            "residual_energy": self.levels[-1].energy if self.levels else 0,
+            "total_explained_energy": self.total_explained_energy,
+            "final_residual": self.final_residual.tolist() if self.final_residual is not None else [],
+            "features": self.features,
+        }
+
+    def _empty_result(self) -> Dict[str, Any]:
+        """Return empty result for invalid input."""
+        return {
+            "levels": [],
+            "total_explained_energy": 0.0,
+            "final_residual": [0.0] * self._dim,
+            "features": {
+                "depth": 0,
+                "coverage": 0.0,
+                "novelty": 1.0,
+                "coherence": 0.0,
+                "tag_memo_activation": 0.0,
+                "expansion_signal": 1.0,
+            },
         }
 
     def get_residual_at_level(self, level: int) -> Optional[np.ndarray]:
         """
         Get the residual vector at a specific level.
 
-        Args:
-            level: Level index
-
-        Returns:
-            Residual vector or None if level doesn't exist
+        Note: Full residual vectors are not stored by default to save memory.
+        You would need to modify analyze() to store them if needed.
         """
-        if 0 <= level < len(self.levels):
-            return self.levels[level].residual
+        _ = level  # Reserved for future implementation
         return None
 
     def get_energy_profile(self) -> List[float]:
-        """
-        Get the energy profile across all levels.
-
-        Returns:
-            List of energy ratios
-        """
-        return [level.energy_ratio for level in self.levels]
-
-    def compute_level_scores(
-        self,
-        candidates: List[Dict],
-    ) -> List[Tuple[int, float, int]]:
-        """
-        Compute relevance scores for candidates at each pyramid level.
-
-        Args:
-            candidates: List of candidates with vectors
-
-        Returns:
-            List of (candidate_index, score, level) tuples
-        """
-        results = []
-
-        for level in self.levels:
-            if level.energy_ratio < self.min_energy_ratio:
-                continue
-
-            residual = level.residual
-
-            for i, candidate in enumerate(candidates):
-                vec = candidate.get("vector")
-                if vec is None:
-                    continue
-
-                if isinstance(vec, list):
-                    vec = np.array(vec)
-
-                # Compute similarity with residual at this level
-                similarity = cosine_similarity(residual, vec)
-
-                # Weight by energy ratio
-                weighted_score = similarity * level.energy_ratio
-
-                results.append((i, weighted_score, level.level))
-
-        # Sort by score
-        results.sort(key=lambda x: x[1], reverse=True)
-
-        return results
-
-    def enhance_query_with_pyramid(
-        self,
-        query: np.ndarray,
-        weights: Optional[List[float]] = None,
-    ) -> np.ndarray:
-        """
-        Enhance a query vector by combining residuals from all levels.
-
-        Args:
-            query: Original query vector
-            weights: Optional weights for each level
-
-        Returns:
-            Enhanced query vector
-        """
-        if not self.levels:
-            return query
-
-        if weights is None:
-            # Use energy ratios as weights
-            weights = [level.energy_ratio for level in self.levels]
-
-        # Normalize weights
-        total_weight = sum(weights)
-        if total_weight == 0:
-            return query
-
-        weights = [w / total_weight for w in weights]
-
-        # Combine residuals
-        enhanced = np.zeros_like(query)
-
-        for level, weight in zip(self.levels, weights):
-            enhanced += weight * level.residual
-
-        # Normalize
-        return normalize_vector(enhanced)
-
-    def export_state(self) -> Dict:
-        """
-        Export pyramid state.
-
-        Returns:
-            Dictionary with pyramid state
-        """
-        return {
-            "levels": [level.to_dict() for level in self.levels],
-            "orthogonal_basis": [b.tolist() for b in self.orthogonal_basis],
-            "handshake_features": [f.to_dict() for f in self.handshake_features],
-            "config": {
-                "max_levels": self.max_levels,
-                "top_k": self.top_k,
-                "min_energy_ratio": self.min_energy_ratio,
-                "dimension": self.dimension,
-            }
-        }
+        """Get the energy profile across all levels."""
+        return [level.residual_energy_ratio for level in self.levels]
 
     def clear(self) -> None:
         """Clear all stored data."""
         self.levels.clear()
-        self.orthogonal_basis.clear()
-        self.handshake_features.clear()
+        self.total_explained_energy = 0.0
+        self.final_residual = None
+        self.features = {}
+
+    def export_state(self) -> Dict:
+        """Export pyramid state."""
+        return {
+            "levels": [level.to_dict() for level in self.levels],
+            "total_explained_energy": self.total_explained_energy,
+            "final_residual": self.final_residual.tolist() if self.final_residual is not None else [],
+            "features": self.features,
+            "config": self.config,
+        }
+
+
+def test_compute_handshakes():
+    """Test _compute_handshakes with 3D vectors."""
+    from vector_db import VexusIndex
+
+    dim = 3
+
+    query = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+
+    tags = [
+        {"id": "物理", "vector": np.array([0.0, 0.0, 0.0], dtype=np.float32).tobytes()},
+        {"id": "量子力学", "vector": np.array([1.0, 1.0, 1.0], dtype=np.float32).tobytes()},
+    ]
+
+    config = {"dimension": dim, "max_levels": 3}
+    pyramid = ResidualPyramid(config)
+    pyramid._dim = dim
+    pyramid.tag_index = VexusIndex(dim=dim, capacity=100)
+
+    print("测试 _compute_handshakes:")
+    result = pyramid._compute_handshakes(query, tags)
+
+    print(f"输入: query={query.tolist()}, tags={[t['id'] for t in tags]}")
+    print(f"返回:")
+    print(f"  magnitudes: {result.magnitudes}")
+    print(f"  directions: {result.directions}")
+
+    print("\n测试 _analyze_handshakes:")
+    print(f"输入:")
+    print(f"  magnitudes: {result.magnitudes}")
+    print(f"  directions: {result.directions}")
+    analysis = pyramid._analyze_handshakes(result)
+    print(f"返回:")
+    for k, v in analysis.items():
+        print(f"  {k}: {round(v, 7)}")
+
+    print("\n测试 _extract_pyramid_features:")
+    # 模拟完整的 pyramid 结构
+    pyramid.levels = [
+        PyramidLevel(
+            level=0,
+            tags=[
+                {"id": 1, "name": "物理", "similarity": 0.85, "contribution": 0.62, "handshake_magnitude": 3.74},
+                {"id": 2, "name": "量子力学", "similarity": 0.78, "contribution": 0.38, "handshake_magnitude": 2.24},
+            ],
+            projection_magnitude=6.12,
+            residual_magnitude=1.85,
+            residual_energy_ratio=0.08,
+            energy_explained=0.75,
+            handshake_features={
+                "direction_coherence": 0.989,
+                "pattern_strength": 0.956,
+                "novelty_signal": 0.989,
+                "noise_signal": 0.001,
+            },
+        ),
+        PyramidLevel(
+            level=1,
+            tags=[
+                {"id": 5, "name": "相对论", "similarity": 0.65, "contribution": 0.45, "handshake_magnitude": 2.1},
+                {"id": 8, "name": "引力波", "similarity": 0.58, "contribution": 0.30, "handshake_magnitude": 1.9},
+            ],
+            projection_magnitude=1.42,
+            residual_magnitude=0.95,
+            residual_energy_ratio=0.02,
+            energy_explained=0.18,
+            handshake_features={
+                "direction_coherence": 0.72,
+                "pattern_strength": 0.65,
+                "novelty_signal": 0.72,
+                "noise_signal": 0.12,
+            },
+        ),
+    ]
+    pyramid.total_explained_energy = 0.93
+    pyramid.final_residual = np.array([0.1, -0.05, 0.02], dtype=np.float32)
+
+    print(f"输入:")
+    print(f"  levels: {len(pyramid.levels)} 层")
+    print(f"  total_explained_energy: {pyramid.total_explained_energy}")
+    print(f"  level0: energy_explained={pyramid.levels[0].energy_explained}, "
+          f"handshake_features={pyramid.levels[0].handshake_features}")
+    print(f"  level1: energy_explained={pyramid.levels[1].energy_explained}, "
+          f"handshake_features={pyramid.levels[1].handshake_features}")
+    features = pyramid._extract_pyramid_features()
+    print(f"返回:")
+    for k, v in features.items():
+        print(f"  {k}: {round(v, 7)}")
+
+
+def test_compute_orthogonal_projection():
+    """Test _compute_orthogonal_projection with 3D vectors."""
+    from vector_db import VexusIndex
+
+    dim = 3
+
+    # Query vector
+    query = np.array([3.0, 4.0, 0.0], dtype=np.float32)
+
+    # Tag vectors: two orthogonal vectors
+    tags = [
+        {"id": 1, "name": "x-axis", "vector": np.array([1.0, 0.0, 0.0], dtype=np.float32).tobytes()},
+        {"id": 2, "name": "y-axis", "vector": np.array([0.0, 1.0, 0.0], dtype=np.float32).tobytes()},
+    ]
+
+    config = {"dimension": dim, "max_levels": 3}
+    pyramid = ResidualPyramid(config)
+    pyramid._dim = dim
+    pyramid.tag_index = VexusIndex(dim=dim, capacity=100)
+
+    print("=" * 60)
+    print("测试 _compute_orthogonal_projection")
+    print("=" * 60)
+    print(f"输入:")
+    print(f"  query vector: {query.tolist()}")
+    print(f"  tags: {[(t['id'], t['name']) for t in tags]}")
+    print(f"    tag 1: {np.frombuffer(tags[0]['vector'], dtype=np.float32).tolist()}")
+    print(f"    tag 2: {np.frombuffer(tags[1]['vector'], dtype=np.float32).tolist()}")
+
+    result = pyramid._compute_orthogonal_projection(query, tags)
+
+    print(f"\n返回:")
+    print(f"  projection: {[round(x, 6) for x in result.projection]}")
+    print(f"  residual: {[round(x, 6) for x in result.residual]}")
+    print(f"  basis_coefficients: {[round(x, 6) for x in result.basis_coefficients]}")
+
+    # 验证数学性质
+    proj_vec = np.array(result.projection, dtype=np.float32)
+    resid_vec = np.array(result.residual, dtype=np.float32)
+    coeffs = result.basis_coefficients
+
+    print(f"\n验证:")
+    print(f"  query = projection + residual: ", end="")
+    reconstructed = proj_vec + resid_vec
+    diff = np.linalg.norm(query - reconstructed)
+    print(f"{'✓' if diff < 1e-5 else '✗'} (diff={diff:.2e})")
+
+    print(f"  projection ⟂ residual: ", end="")
+    dot_product = np.dot(proj_vec, resid_vec)
+    print(f"{'✓' if abs(dot_product) < 1e-5 else '✗'} (dot={dot_product:.2e})")
+
+    tag1_vec = np.frombuffer(tags[0]['vector'], dtype=np.float32)
+    tag2_vec = np.frombuffer(tags[1]['vector'], dtype=np.float32)
+
+    print(f"  coefficient 验证: ", end="")
+    # projection = coeff1 * tag1 + coeff2 * tag2
+    expected_proj = coeffs[0] * tag1_vec + coeffs[1] * tag2_vec
+    proj_diff = np.linalg.norm(proj_vec - expected_proj)
+    print(f"{'✓' if proj_diff < 1e-5 else '✗'} (diff={proj_diff:.2e})")
+
+    print(f"\n能量分析:")
+    query_energy = np.linalg.norm(query) ** 2
+    proj_energy = np.linalg.norm(proj_vec) ** 2
+    resid_energy = np.linalg.norm(resid_vec) ** 2
+    print(f"  ||query||² = {query_energy:.6f}")
+    print(f"  ||projection||² = {proj_energy:.6f}")
+    print(f"  ||residual||² = {resid_energy:.6f}")
+    print(f"  能量守恒: {'✓' if abs(query_energy - proj_energy - resid_energy) < 1e-5 else '✗'}")
+    print(f"  解释比例: {proj_energy / query_energy * 100:.2f}%")
+    print()
+
+
+def test_analyze():
+    """Test analyze method with provided tags vs searched tags."""
+    from vector_db import VexusIndex
+
+    dim = 3
+
+    query = np.array([3.0, 4.0, 0.0], dtype=np.float32)
+
+    tags = [
+        {"id": 1, "name": "x-axis", "vector": np.array([1.0, 0.0, 0.0], dtype=np.float32).tobytes()},
+        {"id": 2, "name": "y-axis", "vector": np.array([0.0, 1.0, 0.0], dtype=np.float32).tobytes()},
+    ]
+
+    config = {"dimension": dim, "max_levels": 3, "top_k": 10, "min_energy_ratio": 0.1}
+    pyramid = ResidualPyramid(config)
+    pyramid._dim = dim
+    pyramid.tag_index = VexusIndex(dim=dim, capacity=100)
+
+    print("=" * 60)
+    print("测试 analyze 方法")
+    print("=" * 60)
+
+    print("\n[Test 1] 传入 tags:")
+    print(f"  query: {query.tolist()}")
+    print(f"  tags: {[(t['id'], t['name']) for t in tags]}")
+
+    result = pyramid.analyze(query, tags)
+
+    print(f"\n返回:")
+    print(f"  levels 数量: {len(result['levels'])}")
+    for i, level in enumerate(result['levels']):
+        print(f"    level {i}: {len(level['tags'])} tags, "
+              f"energy_explained={level['energy_explained']:.4f}, "
+              f"residual_energy_ratio={level['residual_energy_ratio']:.4f}")
+    print(f"  total_explained_energy: {result['total_explained_energy']:.4f}")
+    print(f"  features: {result['features']}")
+
+    print("\n[Test 2] 清空后再次测试:")
+    pyramid.clear()
+    result2 = pyramid.analyze(query, tags)
+
+    print(f"  levels 数量: {len(result2['levels'])}")
+    print(f"  total_explained_energy: {result2['total_explained_energy']:.4f}")
+
+    print("\n[Test 3] 能量剖面:")
+    energy_profile = pyramid.get_energy_profile()
+    print(f"  energy_profile: {[round(e, 4) for e in energy_profile]}")
+
+    print("\n[Test 4] 获取层级残差:")
+    residual = pyramid.get_residual_at_level(0)
+    print(f"  get_residual_at_level(0): {residual} (当前未实现，返回 None)")
+
+    print("\n[Test 5] 导出状态:")
+    state = pyramid.export_state()
+    print(f"  export_state 包含键: {list(state.keys())}")
+
+    print()
+
+
+if __name__ == "__main__":
+    test_compute_handshakes()
+    print("\n")
+    test_compute_orthogonal_projection()
+    print("\n")
+    test_analyze()

@@ -3,420 +3,248 @@ Result Deduplicator Module for RAG Daily Plugin.
 
 Implements intelligent result deduplication using SVD-based topic analysis
 and residual pyramid projection for redundancy detection.
+
+Uses residual selection algorithm to maximize diversity while maintaining relevance.
 """
 
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Set
-from scipy.linalg import svd
-from scipy.spatial.distance import cosine
 import logging
+from typing import Dict, List, Set, Optional, Any
+import numpy as np
 
-from .math_utils import (
-    normalize_vector,
-    cosine_similarity,
-)
+from .epa_module import EPAModule
+from .residual_pyramid import ResidualPyramid
+
 
 logger = logging.getLogger(__name__)
 
 
 class ResultDeduplicator:
-    """
-    Intelligent result deduplicator for RAG retrieval results.
 
-    Features:
-    - SVD-based topic analysis
-    - Redundancy threshold filtering
-    - Diversity-maximizing selection
-    - Semantic clustering for result grouping
-    """
-
-    def __init__(
-        self,
-        max_results: int = 20,
-        topic_count: int = 8,
-        redundancy_threshold: float = 0.85,
-        diversity_weight: float = 0.3,
-    ):
+    def __init__(self, db, config: Optional[Dict[str, Any]] = None):
         """
-        Initialize the result deduplicator.
-
+        初始化主题提取器
+        
         Args:
-            max_results: Maximum number of results to return (default: 20)
-            topic_count: Number of SVD topics for analysis (default: 8)
-            redundancy_threshold: Similarity threshold for redundancy (default: 0.85)
-            diversity_weight: Weight for diversity in scoring (default: 0.3)
+            db: 数据库连接/对象
+            config: 配置字典，可选参数：
+                - dimension: 向量维度 (默认 3072)
+                - max_results: 最终保留的最大结果数 (默认 20)
+                - topic_count: SVD 提取的主题数 (默认 8)
+                - min_energy_ratio: 剩余能量阈值 (默认 0.1)
+                - redundancy_threshold: 冗余阈值(余弦相似度) (默认 0.85)
         """
-        self.max_results = max_results
-        self.topic_count = topic_count
-        self.redundancy_threshold = redundancy_threshold
-        self.diversity_weight = diversity_weight
+        # 初始化数据库连接
+        self.db = db
+        
+        # 1. 初始化配置参数（设置默认值 + 合并用户配置）
+        default_config = {
+            'dimension': 3072,
+            'max_results': 20,
+            'topic_count': 8,
+            'min_energy_ratio': 0.1,
+            'redundancy_threshold': 0.85
+        }
+
+        if config is not None:
+            default_config.update(config)
+
+        # 最终配置赋值
+        self.config = default_config
+        
+        # 2. 实例化 EPAModule（复用现有基础设施）
+        self.epa = EPAModule(
+            db=db,
+            config={
+                'dimension': self.config['dimension'],
+                'max_basis_dim': self.config['topic_count'],
+                'cluster_count': 16  # 针对结果集的小规模聚类
+            }
+        )
+        
+        # 3. 实例化残差金字塔计算器（用于投影计算）
+        self.residual_calculator = ResidualPyramid(
+            tag_index=None,
+            db=db,
+            config={
+                'dimension': self.config['dimension']
+            }
+        )
 
     async def deduplicate(
         self,
         candidates: List[Dict],
         query_vector: np.ndarray,
-        pyramid_features: Optional[Dict] = None,
     ) -> List[Dict]:
         """
-        Deduplicate and rank candidate results.
+        Deduplicate and select diverse results from candidates.
 
         Args:
             candidates: List of candidate results with 'vector' and 'score' fields
-            query_vector: Original query vector
-            pyramid_features: Optional pyramid features for enhanced deduplication
+            query_vector: Original query vector (numpy array)
 
         Returns:
-            Deduplicated and ranked list of results
+            Deduplicated and diverse list of results
         """
-        if not candidates:
+        if not candidates or len(candidates) == 0:
             return []
 
-        logger.info(f"[ResultDeduplicator] Processing {len(candidates)} candidates")
+        # 1. Preprocess: filter results without vectors, ensure Float32Array
+        valid_candidates = [
+            c for c in candidates
+            if c.get("vector") is not None or c.get("_vector") is not None
+        ]
 
-        # Extract vectors and metadata
-        vectors, metadata = self._extract_vectors(candidates)
+        if len(valid_candidates) <= 5:
+            return candidates  # Too few results, no need to deduplicate
 
-        if not vectors:
-            return candidates[:self.max_results]
-
-        # Normalize vectors
-        normalized_vectors = np.array([normalize_vector(v) for v in vectors])
-
-        # Compute query similarities
-        query_similarities = np.array([
-            cosine_similarity(query_vector, vec) for vec in normalized_vectors
-        ])
-
-        # Apply SVD for topic analysis
-        topic_similarities = self._compute_topic_similarities(
-            normalized_vectors,
-            query_vector,
+        logger.info(
+            f"[ResultDeduplicator] Starting deduplication for "
+            f"{len(valid_candidates)} candidates..."
         )
-
-        # Apply pyramid-based diversity scoring if available
-        diversity_scores = self._compute_diversity_scores(
-            normalized_vectors,
-            pyramid_features,
-        )
-
-        # Combine scores
-        combined_scores = self._combine_scores(
-            query_similarities,
-            topic_similarities,
-            diversity_scores,
-        )
-
-        # Find and remove redundant items
-        selected_indices = self._remove_redundant(
-            normalized_vectors,
-            combined_scores,
-        )
-
-        # Build results
-        results = []
-        for idx in selected_indices[:self.max_results]:
-            result = metadata[idx].copy()
-            result["dedup_score"] = float(combined_scores[idx])
-            result["query_similarity"] = float(query_similarities[idx])
-            result["diversity_score"] = float(diversity_scores[idx]) if idx < len(diversity_scores) else 0.0
-            results.append(result)
-
-        logger.info(f"[ResultDeduplicator] Returned {len(results)} deduplicated results")
-
-        return results
-
-    def _extract_vectors(
-        self,
-        candidates: List[Dict],
-    ) -> Tuple[List[np.ndarray], List[Dict]]:
-        """
-        Extract vectors and metadata from candidates.
-
-        Args:
-            candidates: List of candidate dictionaries
-
-        Returns:
-            Tuple of (vectors list, metadata list)
-        """
-        vectors = []
-        metadata = []
-
-        for candidate in candidates:
-            vec = candidate.get("vector")
-            if vec is None:
-                continue
-
-            if isinstance(vec, list):
-                vec = np.array(vec)
-
-            vectors.append(vec)
-            metadata.append(candidate)
-
-        return vectors, metadata
-
-    def _compute_topic_similarities(
-        self,
-        vectors: np.ndarray,
-        query_vector: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Compute topic-based similarities using SVD.
-
-        Args:
-            vectors: Matrix of candidate vectors
-            query_vector: Query vector
-
-        Returns:
-            Array of topic similarity scores
-        """
-        n_samples, n_features = vectors.shape
-
-        # Adjust topic count based on data size
-        k = min(self.topic_count, n_samples, n_features)
-
-        if k < 2:
-            # Not enough data for SVD, return cosine similarities
-            return np.array([
-                cosine_similarity(query_vector, vec)
-                for vec in vectors
-            ])
-
-        try:
-            # Perform SVD
-            U, S, Vt = svd(vectors, full_matrices=False)
-
-            # Use top k components
-            U_k = U[:, :k]
-            S_k = S[:k]
-            Vt_k = Vt[:k, :]
-
-            # Transform query to topic space
-            query_topic = np.dot(query_vector, Vt_k.T)
-
-            # Transform vectors to topic space
-            vectors_topic = np.dot(vectors, Vt_k.T)
-
-            # Compute similarities in topic space
-            similarities = np.array([
-                cosine_similarity(query_topic, vec_topic)
-                for vec_topic in vectors_topic
-            ])
-
-            return similarities
-
-        except Exception as e:
-            logger.warning(f"[ResultDeduplicator] SVD computation failed: {e}, falling back to cosine similarity")
-            return np.array([
-                cosine_similarity(query_vector, vec)
-                for vec in vectors
-            ])
-
-    def _compute_diversity_scores(
-        self,
-        vectors: np.ndarray,
-        pyramid_features: Optional[Dict],
-    ) -> np.ndarray:
-        """
-        Compute diversity scores for each vector.
-
-        Args:
-            vectors: Matrix of candidate vectors
-            pyramid_features: Optional pyramid features
-
-        Returns:
-            Array of diversity scores
-        """
-        n = len(vectors)
-        diversity_scores = np.zeros(n)
-
-        # Use pyramid features if available
-        if pyramid_features and "handshake_features" in pyramid_features:
-            handshake_features = pyramid_features["handshake_features"]
-
-            if handshake_features:
-                # Compute diversity based on handshake domain distribution
-                domains = [f.get("domain", 0) for f in handshake_features]
-                unique_domains = len(set(domains))
-                diversity_scores = np.full(n, unique_domains / len(handshake_features))
-
-        # Compute pairwise diversity
-        for i in range(n):
-            # Average distance to other vectors
-            distances = []
-            for j in range(n):
-                if i != j:
-                    # Use 1 - cosine similarity as distance
-                    sim = cosine_similarity(vectors[i], vectors[j])
-                    distances.append(1.0 - sim)
-
-            if distances:
-                diversity_scores[i] = max(diversity_scores[i], np.mean(distances))
-
-        return diversity_scores
-
-    def _combine_scores(
-        self,
-        query_similarities: np.ndarray,
-        topic_similarities: np.ndarray,
-        diversity_scores: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Combine different scoring components.
-
-        Args:
-            query_similarities: Direct query similarity scores
-            topic_similarities: Topic-based similarity scores
-            diversity_scores: Diversity scores
-
-        Returns:
-            Combined scores
-        """
-        # Normalize all scores to [0, 1]
-        def normalize_scores(scores: np.ndarray) -> np.ndarray:
-            min_val = np.min(scores)
-            max_val = np.max(scores)
-            if max_val - min_val == 0:
-                return np.ones_like(scores) * 0.5
-            return (scores - min_val) / (max_val - min_val)
-
-        norm_query = normalize_scores(query_similarities)
-        norm_topic = normalize_scores(topic_similarities)
-        norm_diversity = normalize_scores(diversity_scores)
-
-        # Combine: relevance + diversity
-        relevance = 0.7 * norm_query + 0.3 * norm_topic
-        combined = (1 - self.diversity_weight) * relevance + self.diversity_weight * norm_diversity
-
-        return combined
-
-    def _remove_redundant(
-        self,
-        vectors: np.ndarray,
-        scores: np.ndarray,
-    ) -> List[int]:
-        """
-        Remove redundant items based on similarity threshold.
-
-        Args:
-            vectors: Matrix of vectors
-            scores: Associated scores
-
-        Returns:
-            List of non-redundant indices (sorted by score)
-        """
-        n = len(vectors)
-        selected: Set[int] = set()
-
-        # Sort by score (descending)
-        sorted_indices = np.argsort(scores)[::-1]
-
-        for idx in sorted_indices:
-            # Check if this vector is redundant with any selected
-            is_redundant = False
-
-            for selected_idx in selected:
-                similarity = cosine_similarity(vectors[idx], vectors[selected_idx])
-
-                if similarity >= self.redundancy_threshold:
-                    is_redundant = True
-                    break
-
-            if not is_redundant:
-                selected.add(idx)
-
-        # Return sorted by score
-        return sorted(selected, key=lambda i: scores[i], reverse=True)
-
-    def cluster_results(
-        self,
-        results: List[Dict],
-        n_clusters: int = 5,
-    ) -> List[List[Dict]]:
-        """
-        Cluster results into semantic groups.
-
-        Args:
-            results: List of results with vectors
-            n_clusters: Number of clusters to create
-
-        Returns:
-            List of result clusters
-        """
-        if not results or len(results) <= n_clusters:
-            return [[r] for r in results]
 
         # Extract vectors
         vectors = []
-        for result in results:
-            vec = result.get("vector")
-            if vec is not None:
-                if isinstance(vec, list):
-                    vec = np.array(vec)
-                vectors.append(vec)
+        for c in valid_candidates:
+            v = c.get("vector") or c.get("_vector")
+            if isinstance(v, np.ndarray):
+                vectors.append(v.astype(np.float32))
+            elif isinstance(v, list):
+                vectors.append(np.array(v, dtype=np.float32))
+            else:
+                vectors.append(np.array(v, dtype=np.float32))
 
-        if len(vectors) < n_clusters:
-            return [[r] for r in results]
+        # 2. SVD analysis on the current result set (no pre-trained Tag clusters)
+        # Build a temporary clusterData structure for EPAModule
+        cluster_data = {
+            "vectors": vectors,
+            "weights": [1.0] * len(vectors),  # Equal weights
+            "labels": ["candidate"] * len(vectors),
+        }
 
-        vectors_array = np.array(vectors)
+        # 3. Compute weighted PCA (SVD) to extract topic distribution of results
+        # This tells us what aspects these search results mainly discuss
+        svd_result = self.epa._compute_weighted_pca(cluster_data)
+        topics = svd_result["U"]
+        energies = svd_result["S"]
 
-        # Simple clustering using similarity-based grouping
-        clusters = [[] for _ in range(n_clusters)]
-        cluster_centers = [vectors_array[i] for i in range(n_clusters)]
+        # Filter out very weak topics
+        significant_topics = []
+        total_energy = float(np.sum(energies))
+        cum_energy = 0.0
 
-        for i, result in enumerate(results):
-            if i >= len(vectors):
+        for i in range(len(topics)):
+            significant_topics.append(topics[i])
+            cum_energy += float(energies[i])
+            if cum_energy / total_energy > 0.95:
                 break
 
-            vec = vectors[i]
+        logger.info(
+            f"[ResultDeduplicator] Identified {len(significant_topics)} "
+            f"significant latent topics."
+        )
 
-            # Find nearest cluster
-            best_cluster = 0
-            best_similarity = -1
+        # 4. Residual Selection Algorithm
+        # Goal: Select results that maximally cover query projections on significantTopics
 
-            for j, center in enumerate(cluster_centers):
-                sim = cosine_similarity(vec, center)
-                if sim > best_similarity:
-                    best_similarity = sim
-                    best_cluster = j
+        selected_indices: Set[int] = set()
+        selected_results = []
 
-            clusters[best_cluster].append(result)
+        # 4.1 Prioritize keeping the most relevant to Query as #1 (Anchor)
+        # Assume candidates are already sorted by score, take first
+        # But for rigor, recalculate similarity with Query
+        best_idx = -1
+        best_sim = -1.0
 
-            # Update cluster center
-            cluster_vectors = [r.get("vector") for r in clusters[best_cluster] if r.get("vector")]
-            if cluster_vectors:
-                cluster_arrays = [np.array(v) if isinstance(v, list) else v for v in cluster_vectors]
-                cluster_centers[best_cluster] = np.mean(cluster_arrays, axis=0)
+        # Normalize Query
+        n_query = self._normalize(query_vector)
 
-        return [c for c in clusters if c]
+        for i in range(len(vectors)):
+            sim = self._dot_product(self._normalize(vectors[i]), n_query)
+            if sim > best_sim:
+                best_sim = sim
+                best_idx = i
 
-    def get_result_summary(
-        self,
-        results: List[Dict],
-    ) -> Dict:
-        """
-        Get a summary of deduplicated results.
+        if best_idx != -1:
+            selected_indices.add(best_idx)
+            selected_results.append(valid_candidates[best_idx])
 
-        Args:
-            results: Deduplicated results
+        # 4.2 Iterative selection: find candidates that best explain residual features
+        max_rounds = self.max_results - 1
 
-        Returns:
-            Summary dictionary
-        """
-        if not results:
-            return {
-                "count": 0,
-                "avg_score": 0,
-                "avg_similarity": 0,
-                "topics_covered": 0,
-            }
+        # Initial orthogonal basis = [first place]
+        current_basis = [vectors[best_idx]]
 
-        scores = [r.get("dedup_score", 0) for r in results]
-        similarities = [r.get("query_similarity", 0) for r in results]
+        for _ in range(max_rounds):
+            max_projected_energy = -1.0
+            next_best_idx = -1
 
-        return {
-            "count": len(results),
-            "avg_score": float(np.mean(scores)) if scores else 0,
-            "avg_similarity": float(np.mean(similarities)) if similarities else 0,
-            "max_score": float(np.max(scores)) if scores else 0,
-            "topics_covered": min(self.topic_count, len(results)),
-        }
+            # Iterate through unselected candidates
+            for i in range(len(vectors)):
+                if i in selected_indices:
+                    continue
+
+                vec = vectors[i]
+
+                # A. Calculate "difference" between this vector and selected set (residual)
+                # Use ResidualPyramid's orthogonal projection logic
+                # We want a vector with maximal component outside "selected basis"
+                # (i.e., provides most new information)
+                basis_dict_list = [{"vector": v.tobytes() if isinstance(v, np.ndarray) else v} for v in current_basis]
+                projection_result = self.residual_calculator._compute_orthogonal_projection(vec, basis_dict_list)
+                residual = np.array(projection_result.residual, dtype=np.float32)
+                novelty_energy = self._magnitude(residual) ** 2
+
+                # B. Meanwhile, this new info must be "relevant" new info, not noise
+                # Check its projection on significantTopics
+                # Simplified: as long as it has projection in Topics space,
+                # and is unique relative to selected basis
+
+                # Combined score: novelty * original relevance
+                # Original score usually in candidates[i].score
+                # If not, use sim calculated above
+                original_score = valid_candidates[i].get("score", 0.5)
+                score = novelty_energy * (original_score + 0.5)  # +0.5 smoothing
+
+                if score > max_projected_energy:
+                    max_projected_energy = score
+                    next_best_idx = i
+
+            if next_best_idx != -1:
+                # Check if too similar (though residual projection already implies this,
+                # explicit threshold is safer)
+                # Actually, if residual magnitude is small, it means linearly correlated (similar)
+                if max_projected_energy < 0.01:
+                    logger.info(
+                        "[ResultDeduplicator] Remaining candidates provide "
+                        "negligible novelty. Stopping."
+                    )
+                    break
+
+                selected_indices.add(next_best_idx)
+                selected_results.append(valid_candidates[next_best_idx])
+                current_basis.append(vectors[next_best_idx])
+            else:
+                break
+
+        logger.info(
+            f"[ResultDeduplicator] Selected {len(selected_results)} / "
+            f"{len(valid_candidates)} diverse results."
+        )
+
+        return selected_results
+
+    def _normalize(self, vec: np.ndarray) -> np.ndarray:
+        """Normalize vector to unit length."""
+        mag = self._magnitude(vec)
+        if mag > 1e-9:
+            return vec / mag
+        return vec.copy()
+
+    def _dot_product(self, v1: np.ndarray, v2: np.ndarray) -> float:
+        """Compute dot product of two vectors."""
+        return float(np.dot(v1, v2))
+
+    def _magnitude(self, vec: np.ndarray) -> float:
+        """Calculate L2 magnitude of a vector."""
+        return float(np.linalg.norm(vec))
+

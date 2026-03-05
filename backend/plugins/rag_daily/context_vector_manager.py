@@ -6,17 +6,11 @@ Maintains a sliding window of context vectors with fuzzy matching capabilities.
 """
 
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+import hashlib
+from typing import Dict, List, Optional
 from datetime import datetime
-import json
 import logging
 
-from .math_utils import (
-    normalize_vector,
-    cosine_similarity,
-    dice_similarity,
-    weighted_average,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +90,9 @@ class ContextVectorManager:
         # Timing
         self.last_update_time: Optional[float] = None
 
+    def generate_hash(self, text):
+        pass
+
     def update_context(
         self,
         messages: List[Dict],
@@ -142,29 +139,6 @@ class ContextVectorManager:
         self._trim_context_window()
 
         logger.debug(f"[ContextVectorManager] Updated context with {len(messages)} messages")
-
-    def aggregate_context(self, role: str = "assistant") -> Optional[np.ndarray]:
-        """
-        Aggregate vectors for a specific role with decay.
-
-        Args:
-            role: Role to aggregate ('assistant', 'user', 'system')
-
-        Returns:
-            Aggregated vector with decay weights, or None if no vectors
-        """
-        vectors = self.role_vectors.get(role, [])
-
-        if not vectors:
-            return None
-
-        if len(vectors) == 1:
-            return vectors[0]
-
-        # Apply decay weights (most recent = highest weight)
-        weights = [self.decay_rate ** (len(vectors) - 1 - i) for i in range(len(vectors))]
-
-        return weighted_average(vectors, weights)
 
     def segment_context(
         self,
@@ -247,89 +221,6 @@ class ContextVectorManager:
 
         return new_segments
 
-    def compute_logic_depth(
-        self,
-        vector: np.ndarray,
-        top_k: int = 64,
-    ) -> float:
-        """
-        Compute the logic depth index of a vector.
-
-        Logic depth measures how "specialized" a vector is by comparing
-        it to the context segments. Higher values indicate more specialized
-        (less common) semantic content.
-
-        Args:
-            vector: Input vector
-            top_k: Number of top segments to consider
-
-        Returns:
-            Logic depth value (higher = more specialized)
-        """
-        if not self.segments:
-            return 0.0
-
-        # Calculate similarities with all segments
-        similarities = []
-        for segment in self.segments:
-            sim = cosine_similarity(vector, segment.vector)
-            similarities.append(sim)
-
-        # Sort and take top k
-        similarities.sort(reverse=True)
-        top_similarities = similarities[:top_k]
-
-        # Logic depth is inversely related to average similarity
-        avg_similarity = np.mean(top_similarities) if top_similarities else 0
-
-        # Return 1 - avg_similarity (higher = more specialized/unique)
-        return float(1.0 - avg_similarity)
-
-    def fuzzy_match_context(
-        self,
-        query: str,
-        query_vector: np.ndarray,
-        threshold: Optional[float] = None,
-    ) -> List[Tuple[ContextSegment, float]]:
-        """
-        Find context segments that fuzzy match the query.
-
-        Args:
-            query: Query text (for string matching)
-            query_vector: Query vector
-            threshold: Override default fuzzy threshold
-
-        Returns:
-            List of (segment, similarity_score) tuples
-        """
-        threshold = threshold or self.fuzzy_threshold
-
-        results = []
-
-        for segment in self.segments:
-            # Vector similarity
-            vector_sim = cosine_similarity(query_vector, segment.vector)
-
-            # String similarity with messages
-            string_sims = []
-            for msg in segment.messages:
-                content = msg.get("content", "")
-                string_sim = dice_similarity(query.lower(), content.lower())
-                string_sims.append(string_sim)
-
-            string_sim = max(string_sims) if string_sims else 0
-
-            # Combined score
-            combined_score = 0.7 * vector_sim + 0.3 * string_sim
-
-            if combined_score >= threshold:
-                results.append((segment, combined_score))
-
-        # Sort by similarity
-        results.sort(key=lambda x: x[1], reverse=True)
-
-        return results
-
     def get_context_summary(self) -> Dict:
         """
         Get a summary of the current context state.
@@ -346,63 +237,3 @@ class ContextVectorManager:
             "last_update": self.last_update_time,
         }
 
-    def clear_context(self) -> None:
-        """Clear all context data."""
-        self.segments.clear()
-        self.message_vectors.clear()
-        for role in self.role_vectors:
-            self.role_vectors[role].clear()
-        self.last_update_time = None
-        logger.debug("[ContextVectorManager] Context cleared")
-
-    def _trim_context_window(self) -> None:
-        """Trim the context window to max_context_window."""
-        if len(self.segments) > self.max_context_window:
-            removed = len(self.segments) - self.max_context_window
-            self.segments = self.segments[-self.max_context_window:]
-            logger.debug(f"[ContextVectorManager] Trimmed {removed} old segments")
-
-        # Also trim role vectors (keep most recent)
-        for role in self.role_vectors:
-            if len(self.role_vectors[role]) > self.max_context_window * 2:
-                removed = len(self.role_vectors[role]) - self.max_context_window * 2
-                self.role_vectors[role] = self.role_vectors[role][-self.max_context_window * 2:]
-                logger.debug(f"[ContextVectorManager] Trimmed {removed} old {role} vectors")
-
-    def export_state(self) -> Dict:
-        """
-        Export the current state for serialization.
-
-        Returns:
-            Dictionary containing all state data
-        """
-        return {
-            "segments": [seg.to_dict() for seg in self.segments],
-            "role_vector_keys": list(self.role_vectors.keys()),
-            "last_update_time": self.last_update_time,
-            "config": {
-                "decay_rate": self.decay_rate,
-                "max_context_window": self.max_context_window,
-                "fuzzy_threshold": self.fuzzy_threshold,
-                "dimension": self.dimension,
-            },
-        }
-
-    def import_state(self, state: Dict) -> None:
-        """
-        Import state from serialized data.
-
-        Args:
-            state: Dictionary containing exported state
-        """
-        self.segments = [ContextSegment.from_dict(seg) for seg in state.get("segments", [])]
-        self.last_update_time = state.get("last_update_time")
-
-        # Restore config
-        config = state.get("config", {})
-        self.decay_rate = config.get("decay_rate", 0.75)
-        self.max_context_window = config.get("max_context_window", 10)
-        self.fuzzy_threshold = config.get("fuzzy_threshold", 0.85)
-        self.dimension = config.get("dimension", 1024)
-
-        logger.debug("[ContextVectorManager] State imported")
