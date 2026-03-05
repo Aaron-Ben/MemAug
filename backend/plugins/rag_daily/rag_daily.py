@@ -13,6 +13,8 @@ Features:
 """
 
 import json
+import math
+import aiofiles
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
@@ -29,551 +31,241 @@ from app.services.embedding import EmbeddingService
 logger = logging.getLogger(__name__)
 
 
-class RAGDailyPlugin:
-    """日记检索插件主类"""
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+dailyNoteRootPath = Path(__file__).parent / "daily_notes"
 
+
+import json
+import os
+from pathlib import Path
+from typing import Dict, Optional, Any
+
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+
+
+class RAGDiaryPlugin:
     def __init__(self):
-        self.time_parser = TimeExpressionParser()
-        self.context_manager: Optional[ContextVectorManager] = None
-        self.epa_module: Optional[EPAModule] = None
-        self.residual_pyramid: Optional[ResidualPyramid] = None
-        self.deduplicator: Optional[ResultDeduplicator] = None
-        self.embedding_service: Optional[EmbeddingService] = None
+        self.name = 'RAGDiaryPlugin'
+        self.vector_db_manager: Optional[Any] = None
+        self.rag_config: Dict[str, Any] = {}
+        self.rerank_config: Dict[str, Any] = {}
+        self.push_vcp_info: Optional[callable] = None
+        self.time_parser = TimeExpressionParser('zh-CN', DEFAULT_TIMEZONE)
+        self.context_vector_manager = ContextVectorManager(self)
+        self.is_initialized = False
+        self.context_vector_allow_api: bool = False
 
-        # Database access
-        self.db_session_factory = None
-        self.vector_db_manager = None
+    async def load_config(self):
+        """加载插件配置（.env 文件和 rag_tags.json）"""
+        # --- 加载插件独立的 .env 文件 ---
+        env_path = Path(__file__).parent / "config.env"
+        
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=env_path)
 
-        self.config: Dict[str, Any] = {}
-        self.dependencies: Dict[str, Any] = {}
-        self.initialized = False
+        # 解析上下文向量API开关
+        context_vector_allow_api = os.getenv("CONTEXT_VECTOR_ALLOW_API_HISTORY", "false").lower()
+        self.context_vector_allow_api = context_vector_allow_api == "true"
 
-        # Vector dimension (bge-m3 default)
-        self.vector_dimension = 1024
-
-    async def initialize(self, config: Dict[str, Any], dependencies: Dict[str, Any]) -> None:
-        """
-        初始化插件
-
-        Args:
-            config: 插件配置
-            dependencies: 依赖注入 (如 vectorDBManager, db_session)
-        """
-        self.config = config
-        self.dependencies = dependencies
-
-        # Extract dependencies
-        self.vector_db_manager = dependencies.get("vectorDBManager")
-        self.db_session_factory = dependencies.get("db_session")
-
-        # Initialize embedding service
-        self.embedding_service = EmbeddingService()
-
-        # Initialize components
-        self.context_manager = ContextVectorManager(
-            decay_rate=config.get("context_decay_rate", 0.75),
-            max_context_window=config.get("max_context_window", 10),
-        )
-        self.epa_module = EPAModule(
-            max_basis_dim=config.get("epa_max_basis_dim", 64),
-            cluster_count=config.get("epa_cluster_count", 32),
-        )
-        self.residual_pyramid = ResidualPyramid(
-            max_levels=config.get("pyramid_max_levels", 3),
-            top_k=config.get("pyramid_top_k", 10),
-        )
-        self.deduplicator = ResultDeduplicator(
-            max_results=config.get("max_results", 20),
-            redundancy_threshold=config.get("redundancy_threshold", 0.85),
-        )
-
-        # Initialize EPA module with tags
-        await self._initialize_epa()
-
-        self.initialized = True
-        logger.info("[RAGDailyPlugin] Initialized successfully")
-
-    async def _initialize_epa(self) -> None:
-        """Initialize EPA module with tag vectors from database."""
-        if self.db_session_factory is None:
-            logger.warning("[RAGDailyPlugin] No database session, skipping EPA initialization")
-            return
-
-        try:
-            from app.models.database import TagTable
-            from sqlalchemy import select
-
-            async with self.db_session_factory() as session:
-                result = await session.execute(
-                    select(TagTable).where(TagTable.vector.isnot(None)
-                ))
-                tags = result.scalars().all()
-
-            # Extract vectors
-            tag_vectors = []
-            for tag in tags:
-                if tag.vector:
-                    try:
-                        vec = json.loads(tag.vector)
-                        if not isinstance(vec, list):
-                            logger.warning(f"[RAGDailyPlugin] Tag {tag.name} vector is not a list")
-                            continue
-                        if len(vec) != self.vector_dimension:
-                            logger.warning(f"[RAGDailyPlugin] Tag {tag.name} vector has invalid dimension: {len(vec)}")
-                            continue
-                        tag_vectors.append(np.array(vec, dtype=np.float32))
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"[RAGDailyPlugin] Tag {tag.name} has invalid JSON: {e}")
-                    except (ValueError, TypeError) as e:
-                        logger.warning(f"[RAGDailyPlugin] Tag {tag.name} has invalid vector format: {e}")
-
-            if tag_vectors:
-                await self.epa_module.initialize(tags_vectors=tag_vectors)
-                logger.info(f"[RAGDailyPlugin] EPA initialized with {len(tag_vectors)} tag vectors")
-        except Exception as e:
-            logger.error(f"[RAGDailyPlugin] EPA initialization failed: {e}")
-
-    async def process_messages(self, messages: List[Dict], config: Dict[str, Any]) -> List[Dict]:
-        """
-        预处理消息 - 检测时间表达式并检索相关日记
-
-        Args:
-            messages: 消息列表
-            config: 插件配置
-
-        Returns:
-            处理后的消息列表（可能附加检索结果）
-        """
-        if not self.initialized:
-            return messages
-
-        # 获取最后一条用户消息
-        user_message = None
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                user_message = msg.get("content", "")
-                break
-
-        if not user_message:
-            return messages
-
-        # 解析时间表达式
-        time_ranges = self.time_parser.parse(user_message)
-
-        if time_ranges:
-            # 检测并激活语义组
-            activated_groups = self.group_manager.detect_and_activate_groups(user_message)
-            logger.info(f"[RAGDailyPlugin] Found {len(time_ranges)} time range(s), {len(activated_groups)} group(s) activated")
-
-            # 执行核心检索
-            results = await self._rag_daily_thought_search(
-                query=user_message,
-                time_ranges=time_ranges,
-                activated_groups=activated_groups,
-                messages=messages,
-            )
-
-            # 将结果附加到最后一条消息
-            if results and messages:
-                messages[-1]["rag_results"] = results
-
-        # 更新上下文向量
-        await self._update_context_vectors(messages)
-
-        return messages
-
-    async def process_tool_call(self, tool_args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        处理工具调用 - 支持通过工具调用方式检索日记
-
-        Args:
-            tool_args: 工具参数，可能包含:
-                - time_expression: 时间表达式
-                - keyword: 搜索关键词
-                - groups: 语义组过滤
-                - top_k: 返回结果数量
-
-        Returns:
-            检索结果
-        """
-        if not self.initialized:
-            return {
-                "status": "error",
-                "error": "Plugin not initialized"
-            }
-
-        time_expression = tool_args.get("time_expression", "")
-        keyword = tool_args.get("keyword", "")
-        top_k = tool_args.get("top_k", 10)
-
-        # 解析时间
-        time_ranges = self.time_parser.parse(time_expression)
-
-        # 检测语义组
-        activated_groups = {}
-        if keyword:
-            activated_groups = self.group_manager.detect_and_activate_groups(keyword)
-
-        # 执行检索
-        results = await self._rag_daily_thought_search(
-            query=keyword or time_expression,
-            time_ranges=time_ranges if time_ranges else None,
-            activated_groups=activated_groups,
-            top_k=top_k,
-        )
-
-        return {
-            "status": "success",
-            "results": results,
-            "count": len(results),
-            "time_ranges": [{"start": tr.start.isoformat(), "end": tr.end.isoformat()} for tr in time_ranges] if time_ranges else [],
-            "activated_groups": list(activated_groups.keys())
+        # --- 加载 Rerank 配置 ---
+        self.rerank_config = {
+            "url": os.getenv("RerankUrl", ""),
+            "api_key": os.getenv("RerankApi", ""),
+            "model": os.getenv("RerankModel", ""),
+            "multiplier": float(os.getenv("RerankMultiplier", 2.0)),
+            "max_tokens": int(os.getenv("RerankMaxTokensPerBatch", 30000))  # 蛇形：maxTokens → max_tokens
         }
+        
+        # 移除启动时检查，改为在调用时实时检查
+        if self.rerank_config["url"] and self.rerank_config["api_key"] and self.rerank_config["model"]:
+            print('[RAGDiaryPlugin] Rerank feature is configured.')
 
-    async def _rag_daily_thought_search(
-        self,
-        query: str,
-        time_ranges: Optional[List[TimeRange]] = None,
-        activated_groups: Optional[Dict[str, Dict]] = None,
-        messages: Optional[List[Dict]] = None,
-        top_k: int = 20,
-    ) -> List[Dict]:
+        config_path = Path(__file__).parent / "rag_tags.json"
+
+        try:
+            try:
+                # Python 异步读取文件（需使用 aiofiles 库：pip install aiofiles）
+                import aiofiles
+                async with aiofiles.open(config_path, 'r', encoding='utf-8') as f:
+                    config_data = await f.read()
+                self.rag_config = json.loads(config_data)
+            except FileNotFoundError:
+                print('[RAGDiaryPlugin] 缓存文件不存在或已损坏，将重新构建。')
+            except json.JSONDecodeError:
+                print('[RAGDiaryPlugin] 缓存文件不存在或已损坏，将重新构建。')
+        except Exception as error:
+            print(f'[RAGDiaryPlugin] 加载配置文件或处理缓存时发生严重错误: {error}')
+            self.rag_config = {}
+
+    async def initialize(self, config: Dict[str, Any], dependencies: Dict[str, Any]):
+        """初始化插件，注入依赖并加载配置"""
+        if "vectorDBManager" in dependencies:
+            self.vector_db_manager = dependencies["vectorDBManager"]
+            print('[RAGDiaryPlugin] vector_db_manager 依赖已注入。')
+        
+        vcp_log_functions = dependencies.get("vcpLogFunctions")
+        if vcp_log_functions and callable(vcp_log_functions.get("pushVcpInfo")):
+            self.push_vcp_info = vcp_log_functions["pushVcpInfo"]
+            print('[RAGDiaryPlugin] push_vcp_info 依赖已成功注入。')
+        else:
+            print('[RAGDiaryPlugin] 警告：push_vcp_info 依赖注入失败或未提供。')
+
+        print('[RAGDiaryPlugin] 开始加载配置...')
+        await self.load_config()
+
+        self.is_initialized = True
+
+    
+    def cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
         """
-        核心检索方法 - 基于向量语义的高级RAG检索
-
-        检索流程:
-        1. 解析时间表达式 → time_ranges
-        2. 检测语义组 → activated_groups
-        3. 生成增强查询向量 → enhanced_vector
-        4. 执行向量检索 → candidates
-        5. 残差金字塔分析 → pyramid_features
-        6. 结果去重 → final_results
-
-        Args:
-            query: 查询文本
-            time_ranges: 时间范围列表
-            activated_groups: 激活的语义组
-            messages: 消息列表（用于上下文增强）
-            top_k: 返回结果数量
-
-        Returns:
-            检索结果列表
+        计算两个向量的余弦相似度
+        :param vec_a: 向量A
+        :param vec_b: 向量B
+        :return: 余弦相似度（0~1），无效输入返回0
         """
-        logger.info(f"[RAGDailyPlugin] Starting search for query: {query[:100]}...")
+        if not vec_a or not vec_b or len(vec_a) != len(vec_b):
+            return 0.0
+        
+        dot_product = 0.0
+        norm_a = 0.0
+        norm_b = 0.0
+        
+        for a, b in zip(vec_a, vec_b):
+            dot_product += a * b
+            norm_a += a * a
+            norm_b += b * b
+        
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        
+        return dot_product / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
-        # Step 1: Generate enhanced query vector
-        query_vector = await self._generate_enhanced_query(
-            query,
-            activated_groups,
-            messages,
-        )
-
-        if query_vector is None:
-            logger.warning("[RAGDailyPlugin] Failed to generate query vector")
-            return []
-
-        # Step 2: Retrieve candidates from database
-        candidates = await self._retrieve_candidates(
-            query_vector=query_vector,
-            time_ranges=time_ranges,
-            top_k=top_k * 2,  # Get more candidates for deduplication
-        )
-
-        if not candidates:
-            logger.info("[RAGDailyPlugin] No candidates found")
-            return []
-
-        logger.info(f"[RAGDailyPlugin] Retrieved {len(candidates)} candidates")
-
-        # Step 3: Analyze with residual pyramid
-        pyramid_features = self.residual_pyramid.analyze(
-            query_vector=np.array(query_vector),
-            tags=candidates[:self.residual_pyramid.top_k],
-        )
-
-        # Step 4: Deduplicate and rank results
-        final_results = await self.deduplicator.deduplicate(
-            candidates=candidates,
-            query_vector=np.array(query_vector),
-            pyramid_features=pyramid_features,
-        )
-
-        logger.info(f"[RAGDailyPlugin] Returning {len(final_results[:top_k])} final results")
-
-        return final_results[:top_k]
-
-    async def _generate_enhanced_query(
-        self,
-        query: str,
-        activated_groups: Optional[Dict[str, Dict]] = None,
-        messages: Optional[List[Dict]] = None,
-    ) -> Optional[np.ndarray]:
+    def _get_weighted_average_vector(
+        self, 
+        vectors: List[List[float]], 
+        weights: List[float]
+    ) -> Optional[List[float]]:
         """
-        生成增强的查询向量
-
-        Args:
-            query: 原始查询文本
-            activated_groups: 激活的语义组
-            messages: 消息列表（用于上下文增强）
-
-        Returns:
-            增强后的查询向量
+        计算多个向量的加权平均向量
+        :param vectors: 向量列表
+        :param weights: 对应权重列表
+        :return: 加权平均向量，无有效向量返回None
         """
-        # 获取基础查询向量
-        query_vector = await self.cached_embedding_service.get_single_embedding(query)
-
-        if query_vector is None:
+        # 1. 过滤掉无效的向量及其对应的权重
+        valid_vectors = []
+        valid_weights = []
+        
+        for vec, w in zip(vectors, weights):
+            if vec and len(vec) > 0:
+                valid_vectors.append(vec)
+                valid_weights.append(w if w is not None else 0.0)
+        
+        if not valid_vectors:
             return None
+        if len(valid_vectors) == 1:
+            return valid_vectors[0]
+        
+        # 2. 归一化权重
+        weight_sum = sum(valid_weights)
+        if weight_sum == 0:
+            print('[RAGDiaryPlugin] Weight sum is zero, using equal weights.')
+            equal_weight = 1.0 / len(valid_vectors)
+            valid_weights = [equal_weight] * len(valid_vectors)
+            weight_sum = 1.0
+        
+        normalized_weights = [w / weight_sum for w in valid_weights]
+        dimension = len(valid_vectors[0])
+        result = [0.0] * dimension
+        
+        # 3. 计算加权平均值
+        for vec, weight in zip(valid_vectors, normalized_weights):
+            if len(vec) != dimension:
+                print('[RAGDiaryPlugin] Vector dimensions do not match. Skipping mismatched vector.')
+                continue
+            for j in range(dimension):
+                result[j] += vec[j] * weight
+        
+        return result
 
-        # 应用语义组增强
-        if activated_groups:
-            enhanced_vector = await self.group_manager.get_enhanced_vector(
-                original_query=query,
-                activated_groups=activated_groups,
-                precomputed_query_vector=query_vector,
-            )
-
-            if enhanced_vector:
-                query_vector = enhanced_vector
-
-        # 应用上下文增强
-        if messages and self.context_manager:
-            # 获取上下文聚合向量
-            context_vector = self.context_manager.aggregate_context(role="assistant")
-
-            if context_vector is not None:
-                # 混合查询向量和上下文向量
-                from .math_utils import weighted_average
-                query_vector = weighted_average(
-                    [np.array(query_vector), context_vector],
-                    [0.8, 0.2],  # 80% query, 20% context
-                )
-
-        return np.array(query_vector) if not isinstance(query_vector, np.ndarray) else query_vector
-
-    async def _retrieve_candidates(
-        self,
-        query_vector: np.ndarray,
-        time_ranges: Optional[List[TimeRange]] = None,
-        top_k: int = 40,
-    ) -> List[Dict]:
+    def _get_average_vector(self, vectors: List[List[float]]) -> Optional[List[float]]:
         """
-        从数据库检索候选结果
-
-        Args:
-            query_vector: 查询向量
-            time_ranges: 时间范围过滤
-            top_k: 候选数量
-
-        Returns:
-            候选结果列表
+        计算多个向量的简单平均向量
+        :param vectors: 向量列表
+        :return: 平均向量，无有效向量返回None
         """
-        if self.db_session_factory is None:
-            logger.warning("[RAGDailyPlugin] No database session available")
-            return []
+        if not vectors or len(vectors) == 0:
+            return None
+        if len(vectors) == 1:
+            return vectors[0]
+        
+        dimension = len(vectors[0])
+        result = [0.0] * dimension
+        
+        # 累加所有向量的对应维度值
+        for vec in vectors:
+            if not vec or len(vec) != dimension:
+                continue
+            for i in range(dimension):
+                result[i] += vec[i]
+        
+        # 计算平均值
+        vector_count = len(vectors)
+        for i in range(dimension):
+            result[i] /= vector_count
+        
+        return result
 
+
+    async def get_diary_content(self, character_name: str) -> str:
+        """
+        异步读取指定角色的日记本内容（整合所有 .txt/.md 文件）
+        :param character_name: 角色名
+        :return: 整合后的日记内容（含错误提示）
+        """
+        character_dir_path = dailyNoteRootPath / character_name
+        character_diary_content = f"[{character_name}日记本内容为空]"
+        
         try:
-            from app.models.database import ChunkTable, DiaryFileTable
-            from sqlalchemy import select, and_
+            # 异步读取目录下的文件列表
+            # Python 3.10+ 支持 asyncio.scandir，这里用 aiofiles 兼容更多版本
+            files = []
+            if os.path.exists(character_dir_path) and os.path.isdir(character_dir_path):
+                files = [f for f in os.listdir(character_dir_path) if os.path.isfile(character_dir_path / f)]
+            
+            # 过滤并排序相关文件（.txt/.md，不区分大小写）
+            relevant_files = [
+                file for file in files
+                if file.lower().endswith(('.txt', '.md'))
+            ]
+            relevant_files.sort()
 
-            async with self.db_session_factory() as session:
-                # Build query
-                query = select(ChunkTable).join(DiaryFileTable)
+            if relevant_files:
+                # 异步读取所有文件内容
+                file_contents = []
+                for file in relevant_files:
+                    file_path = character_dir_path / file
+                    try:
+                        async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+                            content = await f.read()
+                        file_contents.append(content)
+                    except Exception as read_err:
+                        file_contents.append(f"[Error reading file: {file}]")
+                
+                # 拼接文件内容（分隔符：---）
+                character_diary_content = "\n\n---\n\n".join(file_contents)
 
-                # Apply time filter if specified
-                if time_ranges:
-                    time_conditions = []
-                    for tr in time_ranges:
-                        # Convert to timestamps
-                        start_ts = int(tr.start.timestamp())
-                        end_ts = int(tr.end.timestamp())
-                        time_conditions.append(
-                            and_(
-                                DiaryFileTable.mtime >= start_ts,
-                                DiaryFileTable.mtime <= end_ts
-                            )
-                        )
+        except Exception as char_dir_error:
+            # 仅处理非"目录不存在"的错误（ENOENT 对应 Python 的 FileNotFoundError）
+            if not isinstance(char_dir_error, FileNotFoundError):
+                print(f'[RAGDiaryPlugin] Error reading character directory {character_dir_path}: {char_dir_error}')
+            character_diary_content = f"[无法读取“{character_name}”的日记本，可能不存在]"
+        
+        return character_diary_content
 
-                    if time_conditions:
-                        from sqlalchemy import or_
-                        query = query.where(or_(*time_conditions))
-
-                # Only get chunks with vectors
-                query = query.where(ChunkTable.vector.isnot(None))
-
-                # Execute query
-                result = await session.execute(query.limit(top_k * 5))  # Get more for filtering
-                chunks = result.scalars().all()
-
-            # Calculate similarities and build candidates
-            candidates = []
-            query_norm = query_vector / np.linalg.norm(query_vector)
-
-            for chunk in chunks:
-                if not chunk.vector:
-                    continue
-
-                try:
-                    import json
-                    chunk_vector = np.array(json.loads(chunk.vector))
-
-                    # Calculate cosine similarity
-                    chunk_norm = chunk_vector / np.linalg.norm(chunk_vector)
-                    similarity = float(np.dot(query_norm, chunk_norm))
-
-                    candidates.append({
-                        "id": chunk.id,
-                        "content": chunk.content,
-                        "vector": chunk_vector,
-                        "score": similarity,
-                        "file_id": chunk.file_id,
-                        "chunk_index": chunk.chunk_index,
-                    })
-                except Exception as e:
-                    logger.warning(f"[RAGDailyPlugin] Failed to process chunk {chunk.id}: {e}")
-
-            # Sort by similarity
-            candidates.sort(key=lambda x: x["score"], reverse=True)
-
-            return candidates[:top_k]
-
-        except Exception as e:
-            logger.error(f"[RAGDailyPlugin] Failed to retrieve candidates: {e}")
-            return []
-
-    async def _update_context_vectors(self, messages: List[Dict]) -> None:
+    def _sigmoid(self, x: float) -> float:
         """
-        更新上下文向量管理器
-
-        Args:
-            messages: 消息列表
+        Sigmoid 激活函数：将数值映射到 0~1 区间
+        :param x: 输入数值
+        :return: Sigmoid 计算结果
         """
-        if not self.context_manager or not messages:
-            return
-
-        # 获取需要向量化消息的向量
-        message_vectors = {}
-
-        for msg in messages:
-            msg_id = msg.get("id") or f"msg_{hash(msg.get('content', ''))}"
-            content = msg.get("content", "")
-
-            if content and msg_id not in self.context_manager.message_vectors:
-                vector = await self.cached_embedding_service.get_single_embedding(content)
-
-                if vector:
-                    message_vectors[msg_id] = np.array(vector)
-
-        # 更新上下文
-        if message_vectors:
-            self.context_manager.update_context(
-                messages=messages,
-                message_vectors=message_vectors,
-            )
-
-    async def shutdown(self) -> None:
-        """关闭插件，清理资源"""
-        # 保存语义组状态
-        if self.group_manager:
-            await self.group_manager.save_groups()
-
-        # 保存EPA状态
-        if self.epa_module and self.db_session_factory:
-            await self._save_epa_state()
-
-        # 关闭embedding服务
-        if self.embedding_service:
-            await self.embedding_service.close()
-
-        # 保存缓存统计
-        if self.cached_embedding_service:
-            stats = self.cached_embedding_service.get_cache_stats()
-            logger.info(f"[RAGDailyPlugin] Cache stats: {stats}")
-
-        logger.info("[RAGDailyPlugin] Shutdown complete")
-
-    async def _save_epa_state(self) -> None:
-        """保存EPA状态到数据库"""
-        try:
-            from app.models.database import KVStoreTable
-            from sqlalchemy import select
-            import time
-
-            # Helper function to set KV store
-            async def kv_set(key: str, value: str, vector: Optional[List[float]] = None):
-                async with self.db_session_factory() as session:
-                    # Check if exists
-                    existing = await session.execute(
-                        select(KVStoreTable).where(KVStoreTable.key == key)
-                    )
-                    existing_obj = existing.scalar_one_or_none()
-
-                    vector_json = json.dumps(vector) if vector else None
-
-                    if existing_obj:
-                        existing_obj.value = value
-                        existing_obj.vector = vector_json
-                        existing_obj.updated_at = int(time.time())
-                    else:
-                        new_entry = KVStoreTable(
-                            key=key,
-                            value=value,
-                            vector=vector_json,
-                            updated_at=int(time.time())
-                        )
-                        session.add(new_entry)
-
-                    await session.commit()
-
-            await self.epa_module.save_to_cache(kv_set)
-
-        except Exception as e:
-            logger.error(f"[RAGDailyPlugin] Failed to save EPA state: {e}")
-
-
-# 插件实例 (由 PluginManager 加载)
-_plugin_instance: Optional[RAGDailyPlugin] = None
-
-
-def initialize(config: Dict[str, Any], dependencies: Dict[str, Any]) -> None:
-    """同步初始化入口 (兼容性)"""
-    import asyncio
-    global _plugin_instance
-    _plugin_instance = RAGDailyPlugin()
-    # 使用 asyncio.create_task 或同步方式初始化
-    # 这里简化处理，实际应根据环境调整
-
-
-async def initialize_async(config: Dict[str, Any], dependencies: Dict[str, Any]) -> None:
-    """异步初始化入口"""
-    global _plugin_instance
-    _plugin_instance = RAGDailyPlugin()
-    await _plugin_instance.initialize(config, dependencies)
-
-
-async def process_messages(messages: List[Dict], config: Dict[str, Any]) -> List[Dict]:
-    """消息预处理器入口"""
-    global _plugin_instance
-    if _plugin_instance is None:
-        # 自动初始化
-        _plugin_instance = RAGDailyPlugin()
-    return await _plugin_instance.process_messages(messages, config)
-
-
-async def process_tool_call(tool_args: Dict[str, Any]) -> Dict[str, Any]:
-    """工具调用入口"""
-    global _plugin_instance
-    if _plugin_instance is None:
-        return {"status": "error", "error": "Plugin not initialized"}
-    return await _plugin_instance.process_tool_call(tool_args)
-
-
-async def shutdown() -> None:
-    """关闭入口"""
-    global _plugin_instance
-    if _plugin_instance:
-        await _plugin_instance.shutdown()
-
-
-# 默认使用异步初始化
-initialize = initialize_async
+        return 1 / (1 + math.exp(-x))

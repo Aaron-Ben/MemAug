@@ -1,13 +1,12 @@
-/** Main chat page component - RPG dialogue style with topic sidebar */
+/** Main chat page component with topic sidebar */
 
 import React, { useState, useCallback } from 'react';
-import { RPGChatPanel, TraditionalChatPanel } from '../components/conversation';
-import { FloatingActionButton, ChatStyleToggle } from '../components/ui';
+import { TraditionalChatPanel } from '../components/conversation';
+import { FloatingActionButton } from '../components/ui';
 import { DiaryListModal, DiaryDetailModal, DiaryEditModal } from '../components/diary';
 import { TopicSidebar } from '../components/topics';
 import { useChat } from '../hooks/useChat';
 import { useTopics } from '../hooks/useTopics';
-import { useChatStyle } from '../hooks/useChatStyle';
 import backgroundImage from '/background/image.png';
 import type { DiaryEntry } from '../services/diaryService';
 import type { DisplayMessage } from '../types/chat';
@@ -19,7 +18,6 @@ export const ChatPage: React.FC = () => {
   const [showDiaryDetail, setShowDiaryDetail] = useState(false);
   const [showDiaryEdit, setShowDiaryEdit] = useState(false);
   const [selectedDiary, setSelectedDiary] = useState<DiaryEntry | null>(null);
-  const [userInput, setUserInput] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const handleVoiceInputStart = useCallback(() => {
@@ -47,11 +45,10 @@ export const ChatPage: React.FC = () => {
 
   // Chat functionality with topic support
   const {
-    currentTurn,
     messages,
     loading,
     streamingMessage,
-    submitUserMessage,
+    sendStream,
     clearHistory,
     autoPlayTTS,
     toggleAutoPlayTTS,
@@ -62,9 +59,6 @@ export const ChatPage: React.FC = () => {
     topicId: currentTopicId ?? undefined,
     characterUuid: characterUuid ?? undefined,
   });
-
-  // Chat style management
-  const { style: chatStyle, toggleStyle: toggleChatStyle } = useChatStyle();
 
   // Handle topic selection
   async function handleTopicChange(topicId: number | null, topicMessages: DisplayMessage[]) {
@@ -98,16 +92,9 @@ export const ChatPage: React.FC = () => {
     await refreshTopics();
   }, [deleteTopic, refreshTopics]);
 
-  const handleSend = () => {
-    if (userInput.trim()) {
-      submitUserMessage(userInput.trim());
-      setUserInput('');
-    }
-  };
-
   const handleSendMessage = (content: string) => {
     if (content.trim()) {
-      submitUserMessage(content.trim());
+      sendStream(content.trim());
     }
   };
 
@@ -156,46 +143,16 @@ export const ChatPage: React.FC = () => {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col relative">
-        {/* Chat Style Toggle Button */}
-        <ChatStyleToggle
-          currentStyle={chatStyle}
-          onToggle={toggleChatStyle}
+        {/* Traditional Style Chat Panel - Full height */}
+        <TraditionalChatPanel
+          messages={messages}
+          loading={loading}
+          streamingMessage={streamingMessage}
+          onSendMessage={handleSendMessage}
+          onVoiceInputStart={handleVoiceInputStart}
+          onVoiceInputEnd={handleVoiceInputEnd}
+          placeholder="和妹妹聊聊天吧～"
         />
-
-        {/* Conditional Chat Panel based on style */}
-        {chatStyle === 'rpg' ? (
-          <>
-            {/* Empty space for RPG style */}
-            <div className="flex-1 overflow-y-auto">
-              {/* Content can be added here if needed */}
-            </div>
-
-            {/* RPG Style Control Panel - Fixed at bottom */}
-            <RPGChatPanel
-              phase={currentTurn.phase}
-              userInput={userInput}
-              aiResponse={currentTurn.aiMessage}
-              isStreaming={loading}
-              onUserInputChange={setUserInput}
-              onSend={handleSend}
-              placeholder="和妹妹聊聊天吧～"
-              onVoiceInputStart={handleVoiceInputStart}
-              onVoiceInputEnd={handleVoiceInputEnd}
-              onPlayTTS={playTTS}
-            />
-          </>
-        ) : (
-          /* Traditional Style Chat Panel - Full height */
-          <TraditionalChatPanel
-            messages={messages}
-            loading={loading}
-            streamingMessage={streamingMessage}
-            onSendMessage={handleSendMessage}
-            onVoiceInputStart={handleVoiceInputStart}
-            onVoiceInputEnd={handleVoiceInputEnd}
-            placeholder="和妹妹聊聊天吧～"
-          />
-        )}
 
         {/* TTS Toggle */}
         <div className="fixed top-[72px] right-4 z-50">

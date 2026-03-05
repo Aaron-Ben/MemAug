@@ -5,5 +5,4 @@ export { Modal } from './Modal';
 export { FloatingActionButton } from './FloatingActionButton';
 export { LoadingSpinner } from './LoadingSpinner';
 export { TypingIndicator } from './TypingIndicator';
-export { ChatStyleToggle } from './ChatStyleToggle';
 export { ControlButton } from './ControlButton';

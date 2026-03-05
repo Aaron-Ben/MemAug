@@ -1,9 +1,9 @@
 /** Custom hook for chat functionality */
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { sendMessage, sendMessageStream, getChatStarter } from '../services/chatService';
 import { speakText } from '../services/ttsService';
-import type { DisplayMessage, ChatRequest, Message, CurrentTurn } from '../types/chat';
+import type { DisplayMessage, ChatRequest, Message } from '../types/chat';
 
 const DEFAULT_CHARACTER_ID = 'sister_001';
 const STORAGE_KEY = 'chat_history';
@@ -25,14 +25,6 @@ export function useChat(options?: UseChatOptions) {
   const [loading, setLoading] = useState(false);
   const [streamingMessage, setStreamingMessage] = useState('');
   const errorRef = useRef<string | null>(null);
-
-  // Current turn state for RPG dialogue style
-  const [currentTurn, setCurrentTurn] = useState<CurrentTurn>({
-    phase: 'user_input',
-    userMessage: '',
-    aiMessage: '',
-    timestamp: new Date(),
-  });
 
   // Load history from localStorage on mount (only if no topic is set)
   useState(() => {
@@ -201,13 +193,6 @@ export function useChat(options?: UseChatOptions) {
     if (!topicId) {
       localStorage.removeItem(`${STORAGE_KEY}_${characterId}`);
     }
-    // Reset current turn
-    setCurrentTurn({
-      phase: 'user_input',
-      userMessage: '',
-      aiMessage: '',
-      timestamp: new Date(),
-    });
   }, [characterId, topicId]);
 
   const getStarter = useCallback(async () => {
@@ -219,94 +204,6 @@ export function useChat(options?: UseChatOptions) {
       return null;
     }
   }, [characterId]);
-
-  // RPG style: Submit user message and start AI reply
-  const submitUserMessage = useCallback(async (content: string) => {
-    if (!content.trim() || loading) return;
-
-    setLoading(true);
-    errorRef.current = null;
-
-    // Update current turn to show user message
-    setCurrentTurn({
-      phase: 'ai_reply',
-      userMessage: content.trim(),
-      aiMessage: '',
-      timestamp: new Date(),
-    });
-
-    // Add user message to history
-    const userMessage: DisplayMessage = {
-      id: `user-${Date.now()}`,
-      content: content.trim(),
-      isUser: true,
-      timestamp: new Date(),
-    };
-    addMessage(userMessage);
-
-    // Build conversation history for API
-    const conversationHistory: Message[] = messages
-      .slice(-10)
-      .map((msg) => ({
-        role: msg.isUser ? 'user' : 'assistant',
-        content: msg.content,
-      }));
-
-    const request: ChatRequest = {
-      message: content,
-      character_id: characterId,
-      conversation_history: conversationHistory,
-    };
-
-    try {
-      let fullResponse = '';
-      for await (const chunk of sendMessageStream(request, {
-        topic_id: topicId,
-        character_uuid: characterUuid || undefined,
-      })) {
-        fullResponse += chunk;
-        // Update current turn with streaming response
-        setCurrentTurn((prev) => ({
-          ...prev,
-          aiMessage: fullResponse,
-        }));
-      }
-
-      // Add AI message to history
-      const assistantMessage: DisplayMessage = {
-        id: `assistant-${Date.now()}`,
-        content: fullResponse,
-        isUser: false,
-        timestamp: new Date(),
-      };
-      addMessage(assistantMessage);
-
-      // Update phase to completed
-      setCurrentTurn((prev) => ({
-        ...prev,
-        phase: 'completed',
-        aiMessage: fullResponse,
-      }));
-    } catch (err) {
-      errorRef.current = err instanceof Error ? err.message : 'Failed to send message';
-      setCurrentTurn((prev) => ({
-        ...prev,
-        phase: 'user_input',
-      }));
-    } finally {
-      setLoading(false);
-    }
-  }, [messages, characterId, topicId, characterUuid, loading, addMessage]);
-
-  // RPG style: Start a new conversation turn
-  const startNewTurn = useCallback(() => {
-    setCurrentTurn({
-      phase: 'user_input',
-      userMessage: '',
-      aiMessage: '',
-      timestamp: new Date(),
-    });
-  }, []);
 
   // TTS: Play TTS for given text
   const playTTS = useCallback(async (text: string) => {
@@ -328,7 +225,7 @@ export function useChat(options?: UseChatOptions) {
   // Get current character UUID
   const getCurrentCharacterUuid = useCallback(() => characterUuid, [characterUuid]);
 
-  // TTS auto-play state and effect
+  // TTS auto-play state
   const [autoPlayTTS, setAutoPlayTTS] = useState(() => {
     // Load from localStorage
     try {
@@ -338,18 +235,6 @@ export function useChat(options?: UseChatOptions) {
       return false;
     }
   });
-
-  // Effect to auto-play TTS when AI response completes
-  useEffect(() => {
-    if (
-      autoPlayTTS &&
-      currentTurn.phase === 'completed' &&
-      currentTurn.aiMessage &&
-      !loading
-    ) {
-      playTTS(currentTurn.aiMessage);
-    }
-  }, [autoPlayTTS, currentTurn.phase, currentTurn.aiMessage, loading, playTTS]);
 
   // Toggle auto-play TTS
   const toggleAutoPlayTTS = useCallback((enabled: boolean) => {
@@ -370,10 +255,6 @@ export function useChat(options?: UseChatOptions) {
     sendStream,
     clearHistory,
     getStarter,
-    // RPG style
-    currentTurn,
-    submitUserMessage,
-    startNewTurn,
     // TTS
     autoPlayTTS,
     toggleAutoPlayTTS,

@@ -1,239 +1,442 @@
 """
-Context Vector Manager for RAG Daily Plugin.
+ContextVectorManager - 上下文向量对应映射管理模块
 
-Manages conversation message vectors with decay aggregation and semantic segmentation.
-Maintains a sliding window of context vectors with fuzzy matching capabilities.
+功能：
+1. 维护当前会话中所有消息（除最后一条 AI 和用户消息外）的向量映射。
+2. 提供模糊匹配技术，处理 AI 或用户对上下文的微小编辑。
+3. 为后续的"上下文向量衰减聚合系统"提供底层数据支持。
 """
 
-import numpy as np
 import hashlib
-from typing import Dict, List, Optional
-from datetime import datetime
 import logging
+import re
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+import numpy as np
 
 
 logger = logging.getLogger(__name__)
 
 
-class ContextSegment:
-    """A semantic segment of context with associated vectors."""
-
-    def __init__(
-        self,
-        segment_id: str,
-        messages: List[Dict],
-        vector: np.ndarray,
-        timestamp: float,
-    ):
-        self.segment_id = segment_id
-        self.messages = messages
-        self.vector = vector
-        self.timestamp = timestamp
-
-    def to_dict(self) -> Dict:
-        """Convert to dictionary for serialization."""
-        return {
-            "segment_id": self.segment_id,
-            "messages": self.messages,
-            "vector": self.vector.tolist() if isinstance(self.vector, np.ndarray) else self.vector,
-            "timestamp": self.timestamp,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict) -> "ContextSegment":
-        """Create from dictionary."""
-        return cls(
-            segment_id=data["segment_id"],
-            messages=data["messages"],
-            vector=np.array(data["vector"]),
-            timestamp=data["timestamp"],
-        )
+def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+    """计算余弦相似度"""
+    if vec_a.shape != vec_b.shape:
+        return 0.0
+    dot = np.dot(vec_a, vec_b)
+    norm_a = np.linalg.norm(vec_a)
+    norm_b = np.linalg.norm(vec_b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 class ContextVectorManager:
     """
-    Manages context vectors for conversation messages.
+    管理对话消息的上下文向量映射。
 
-    Features:
-    - Decay-based vector aggregation
-    - Semantic segmentation of message context
-    - Fuzzy matching for context retrieval
-    - Logic depth computation
+    特性：
+    - 模糊匹配技术处理微小编辑
+    - 语义向量分段
+    - 上下文向量衰减聚合
+    - 语义宽度计算
     """
 
     def __init__(
         self,
+        fuzzy_threshold: float = 0.85,
         decay_rate: float = 0.75,
         max_context_window: int = 10,
-        fuzzy_threshold: float = 0.85,
         dimension: int = 1024,
     ):
         """
-        Initialize the context vector manager.
+        初始化上下文向量管理器。
 
         Args:
-            decay_rate: Decay rate for temporal aggregation (default: 0.75)
-            max_context_window: Maximum number of context segments to keep
-            fuzzy_threshold: Threshold for fuzzy matching (default: 0.85)
-            dimension: Vector dimension (default: 1024 for bge-m3)
+            fuzzy_threshold: 模糊匹配阈值 (0.0 ~ 1.0)，用于判断两个文本是否足够相似以复用向量
+            decay_rate: 衰减率，用于聚合历史向量
+            max_context_window: 限制聚合窗口大小
+            dimension: 向量维度
         """
+        # 核心映射：normalized_hash -> {vector, role, original_text, timestamp}
+        self.vector_map: Dict[str, Dict[str, Any]] = {}
+
+        # 顺序索引：用于按顺序获取向量
+        self.history_assistant_vectors: List[np.ndarray] = []
+        self.history_user_vectors: List[np.ndarray] = []
+
+        # 配置参数
+        self.fuzzy_threshold = fuzzy_threshold
         self.decay_rate = decay_rate
         self.max_context_window = max_context_window
-        self.fuzzy_threshold = fuzzy_threshold
         self.dimension = dimension
 
-        # Context storage
-        self.segments: List[ContextSegment] = []
-        self.message_vectors: Dict[str, np.ndarray] = {}  # message_id -> vector
-        self.role_vectors: Dict[str, List[np.ndarray]] = {"user": [], "assistant": [], "system": []}
+    def _generate_hash(self, text: str) -> str:
+        """
+        生成内容哈希
 
-        # Timing
-        self.last_update_time: Optional[float] = None
+        Args:
+            text: 原始文本
 
-    def generate_hash(self, text):
-        pass
+        Returns:
+            SHA256 哈希值
+        """
+        return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+    def _normalize(self, text: str) -> str:
+        """
+        标准化文本，用于模糊匹配
+
+        Args:
+            text: 原始文本
+
+        Returns:
+            标准化后的文本（转小写，去除多余空格）
+        """
+        # 转小写，去除首尾空格，合并多个空格为单个空格
+        normalized = re.sub(r'\s+', ' ', text.strip().lower())
+        return normalized
+
+    def _calculate_similarity(self, str1: str, str2: str) -> float:
+        """
+        简单的字符串相似度算法 (Dice's Coefficient)
+        用于处理微小编辑时的模糊匹配
+
+        Args:
+            str1: 字符串1
+            str2: 字符串2
+
+        Returns:
+            相似度 (0.0 ~ 1.0)
+        """
+        if str1 == str2:
+            return 1.0
+        if len(str1) < 2 or len(str2) < 2:
+            return 0.0
+
+        def get_bigrams(s: str) -> set:
+            """获取字符二元组集合"""
+            return {s[i:i+2] for i in range(len(s) - 1)}
+
+        b1 = get_bigrams(str1)
+        b2 = get_bigrams(str2)
+
+        if not b1 or not b2:
+            return 0.0
+
+        intersection = len(b1 & b2)
+        return (2.0 * intersection) / (len(b1) + len(b2))
+
+    def _find_fuzzy_match(self, normalized_text: str) -> Optional[np.ndarray]:
+        """
+        尝试在现有缓存中寻找模糊匹配的向量
+
+        Args:
+            normalized_text: 标准化后的文本
+
+        Returns:
+            匹配的向量，如果没有找到则返回 None
+        """
+        for entry in self.vector_map.values():
+            similarity = self._calculate_similarity(
+                normalized_text,
+                self._normalize(entry['original_text'])
+            )
+            if similarity >= self.fuzzy_threshold:
+                return entry['vector']
+        return None
+
+    def _cosine_similarity(self, vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+        """
+        计算余弦相似度
+
+        Args:
+            vec_a: 向量A
+            vec_b: 向量B
+
+        Returns:
+            余弦相似度 (0.0 ~ 1.0)
+        """
+        return cosine_similarity(vec_a, vec_b)
+
+    def _finalize_segment(
+        self,
+        vectors: List[np.ndarray],
+        texts: List[str],
+        roles: List[str],
+        start_index: int,
+        end_index: int
+    ) -> Dict[str, Any]:
+        """
+        完成分段的计算（计算平均向量并归一化）
+
+        Args:
+            vectors: 分段中的向量列表
+            texts: 分段中的文本列表
+            roles: 分段中的角色列表
+            start_index: 起始索引
+            end_index: 结束索引
+
+        Returns:
+            分段字典 {vector, text, roles, range, count}
+        """
+        if not vectors:
+            return None
+
+        # 计算平均向量
+        count = len(vectors)
+        avg_vec = np.mean(vectors, axis=0)
+
+        # 归一化
+        norm = np.linalg.norm(avg_vec)
+        if norm > 1e-9:
+            avg_vec = avg_vec / norm
+
+        return {
+            'vector': avg_vec,
+            'text': '\n'.join(texts),
+            'roles': list(set(roles)),  # 去重角色
+            'range': [start_index, end_index],
+            'count': count
+        }
 
     def update_context(
         self,
         messages: List[Dict],
-        message_vectors: Optional[Dict[str, np.ndarray]] = None,
-        allow_api: bool = False,
+        embedding_cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
         """
-        Update context vectors with new messages.
+        更新上下文映射
 
         Args:
-            messages: List of message dictionaries with 'role', 'content', 'id' keys
-            message_vectors: Optional pre-computed vectors for messages
-            allow_api: Whether to allow API calls for missing vectors (not used in this implementation)
+            messages: 当前会话的消息数组
+            embedding_cache: Embedding 缓存字典 {content: vector}
+            allow_api: 是否允许 API 调用获取新向量（当前实现未使用）
         """
-        current_time = datetime.now().timestamp()
-        self.last_update_time = current_time
+        if not isinstance(messages, list):
+            return
 
-        # Process new messages
-        for msg in messages:
-            msg_id = msg.get("id", f"msg_{current_time}_{len(self.message_vectors)}")
+        new_assistant_vectors = []
+        new_user_vectors = []
 
-            if msg_id in self.message_vectors:
-                continue  # Already processed
+        # 识别最后的消息索引以进行排除
+        last_user_index = next((
+            i for i in range(len(messages) - 1, -1, -1)
+            if messages[i].get('role') == 'user'
+        ), -1)
 
-            # Store vector if provided
-            if message_vectors and msg_id in message_vectors:
-                vector = message_vectors[msg_id]
-            else:
-                # No vector provided, skip (embedding service should be called externally)
+        last_ai_index = next((
+            i for i in range(len(messages) - 1, -1, -1)
+            if messages[i].get('role') == 'assistant'
+        ), -1)
+
+        for index, msg in enumerate(messages):
+            # 排除逻辑：系统消息、最后一个用户消息、最后一个 AI 消息
+            role = msg.get('role')
+            if role == 'system':
+                continue
+            if index == last_user_index or index == last_ai_index:
                 continue
 
-            self.message_vectors[msg_id] = vector
+            # 获取内容
+            content = msg.get('content', '')
+            if isinstance(content, list):
+                # 处理内容是列表的情况（如 multimodal 消息）
+                text_items = [item.get('text', '') for item in content if item.get('type') == 'text']
+                content = ' '.join(text_items)
 
-            # Store by role
-            role = msg.get("role", "user")
-            if role in self.role_vectors:
-                self.role_vectors[role].append(vector)
+            if not content or len(content) < 2:
+                continue
 
-        # Segment context if needed
-        if len(messages) > 0:
-            self.segment_context(messages)
+            normalized = self._normalize(content)
+            content_hash = self._generate_hash(normalized)
 
-        # Trim context window
-        self._trim_context_window()
+            vector = None
 
-        logger.debug(f"[ContextVectorManager] Updated context with {len(messages)} messages")
+            # 1. 精确匹配
+            if content_hash in self.vector_map:
+                vector = self.vector_map[content_hash]['vector']
+            # 2. 模糊匹配 (处理微小编辑)
+            else:
+                vector = self._find_fuzzy_match(normalized)
+
+                # 3. 尝试从插件的 Embedding 缓存中获取（不触发 API）
+                if vector is None and embedding_cache:
+                    vector = embedding_cache.get(content)
+
+                # 4. 如果缓存也没有，且允许 API，则请求新向量（触发 API）
+                # 注意：当前实现中，API 调用应在外部处理
+
+                # 存入映射
+                if vector is not None:
+                    self.vector_map[content_hash] = {
+                        'vector': vector,
+                        'role': role,
+                        'original_text': content,
+                        'timestamp': datetime.now().timestamp()
+                    }
+
+            if vector is not None:
+                if role == 'assistant':
+                    new_assistant_vectors.append(vector)
+                elif role == 'user':
+                    new_user_vectors.append(vector)
+
+        # 更新历史向量列表
+        self.history_assistant_vectors = new_assistant_vectors
+        self.history_user_vectors = new_user_vectors
+
+        logger.debug(
+            f"[ContextVectorManager] 上下文向量映射已更新。"
+            f"历史AI向量: {len(self.history_assistant_vectors)}, "
+            f"历史用户向量: {len(self.history_user_vectors)}"
+        )
+
+    def compute_semantic_width(self, vector: Optional[np.ndarray]) -> float:
+        """
+        计算语义宽度指数 S
+        核心思想：向量的模长反映了语义的确定性/强度
+
+        Args:
+            vector: 输入向量
+
+        Returns:
+            语义宽度值
+        """
+        if vector is None:
+            return 0.0
+        magnitude = np.linalg.norm(vector)
+        spread_factor = 1.2  # 可调参数
+        return magnitude * spread_factor
 
     def segment_context(
         self,
         messages: List[Dict],
-        threshold: float = 0.70,
-    ) -> List[ContextSegment]:
+        similarity_threshold: float = 0.70
+    ) -> List[Dict[str, Any]]:
         """
-        Segment messages into semantic groups based on vector similarity.
+        基于语义向量的上下文分段 (Semantic Segmentation)
+        将连续的、高相似度的消息归并为一个段落 (Segment/Topic)
 
         Args:
-            messages: List of messages to segment
-            threshold: Similarity threshold for segmentation (default: 0.70)
+            messages: 消息列表 (通常是 history)
+            similarity_threshold: 分段阈值，低于此值则断开 (默认 0.70)
 
         Returns:
-            List of context segments
+            分段列表，每个分段包含 {vector, text, role, range, count}
         """
-        if not messages:
-            return []
-
-        new_segments = []
-        current_segment_messages = []
-        current_segment_vectors = []
-
-        for i, msg in enumerate(messages):
-            msg_id = msg.get("id", f"msg_{i}")
-            vector = self.message_vectors.get(msg_id)
-
-            if vector is None:
+        # 重新构建有序序列
+        sequence = []
+        for index, msg in enumerate(messages):
+            # 跳过系统消息和无关消息
+            if msg.get('role') == 'system':
                 continue
 
-            current_segment_messages.append(msg)
-            current_segment_vectors.append(vector)
+            # 获取内容
+            content = msg.get('content', '')
+            if isinstance(content, list):
+                text_items = [item.get('text', '') for item in content if item.get('type') == 'text']
+                content = ' '.join(text_items)
 
-            # Check if we should segment (at least 2 messages in current segment)
-            if len(current_segment_vectors) >= 2:
-                # Calculate similarity with segment average
-                segment_avg = np.mean(current_segment_vectors[:-1], axis=0)
-                similarity = cosine_similarity(vector, segment_avg)
+            if not content or len(content) < 2:
+                continue
 
-                if similarity < threshold:
-                    # Create new segment
-                    segment_id = f"seg_{len(self.segments) + len(new_segments)}_{datetime.now().timestamp()}"
-                    segment_vector = np.mean(current_segment_vectors[:-1], axis=0)
+            normalized = self._normalize(content)
+            content_hash = self._generate_hash(normalized)
 
-                    segment = ContextSegment(
-                        segment_id=segment_id,
-                        messages=current_segment_messages[:-1].copy(),
-                        vector=segment_vector,
-                        timestamp=datetime.now().timestamp(),
-                    )
+            # 尝试精确匹配
+            entry = self.vector_map.get(content_hash)
 
-                    new_segments.append(segment)
+            # 尝试模糊匹配 (如果精确匹配失败)
+            if entry is None:
+                fuzzy_vector = self._find_fuzzy_match(normalized)
+                if fuzzy_vector is not None:
+                    entry = {
+                        'vector': fuzzy_vector,
+                        'role': msg.get('role'),
+                        'original_text': content,
+                    }
 
-                    # Start new segment with current message
-                    current_segment_messages = [msg]
-                    current_segment_vectors = [vector]
+            if entry and entry.get('vector') is not None:
+                sequence.append({
+                    'index': index,
+                    'role': msg.get('role'),
+                    'text': content,
+                    'vector': entry['vector']
+                })
 
-        # Add the last segment
-        if current_segment_messages:
-            segment_id = f"seg_{len(self.segments) + len(new_segments)}_{datetime.now().timestamp()}"
-            segment_vector = np.mean(current_segment_vectors, axis=0)
+        if not sequence:
+            return []
 
-            segment = ContextSegment(
-                segment_id=segment_id,
-                messages=current_segment_messages,
-                vector=segment_vector,
-                timestamp=datetime.now().timestamp(),
-            )
+        # 执行分段
+        segments = []
+        current_segment = {
+            'vectors': [sequence[0]['vector']],
+            'texts': [sequence[0]['text']],
+            'start_index': sequence[0]['index'],
+            'end_index': sequence[0]['index'],
+            'roles': [sequence[0]['role']]
+        }
 
-            new_segments.append(segment)
+        for i in range(1, len(sequence)):
+            curr = sequence[i]
+            prev = sequence[i - 1]
 
-        # Merge new segments with existing
-        self.segments.extend(new_segments)
+            # 计算与上一条的相似度
+            sim = self._cosine_similarity(prev['vector'], curr['vector'])
 
-        # Trim to max window
-        if len(self.segments) > self.max_context_window:
-            self.segments = self.segments[-self.max_context_window:]
+            # 角色变化也可以作为分段的弱信号，但在这里我们主要看语义
+            # 如果相似度高，即使角色不同也可以合并（例如连续的问答对，讨论同一个话题）
+            # 如果相似度低，即使角色相同也应该断开
 
-        logger.debug(f"[ContextVectorManager] Created {len(new_segments)} new segments")
+            if sim >= similarity_threshold:
+                # 合并
+                current_segment['vectors'].append(curr['vector'])
+                current_segment['texts'].append(curr['text'])
+                current_segment['end_index'] = curr['index']
+                current_segment['roles'].append(curr['role'])
+            else:
+                # 断开，保存旧段
+                segments.append(self._finalize_segment(
+                    current_segment['vectors'],
+                    current_segment['texts'],
+                    current_segment['roles'],
+                    current_segment['start_index'],
+                    current_segment['end_index']
+                ))
+                # 开启新段
+                current_segment = {
+                    'vectors': [curr['vector']],
+                    'texts': [curr['text']],
+                    'start_index': curr['index'],
+                    'end_index': curr['index'],
+                    'roles': [curr['role']]
+                }
 
-        return new_segments
+        # 保存最后一个段
+        segments.append(self._finalize_segment(
+            current_segment['vectors'],
+            current_segment['texts'],
+            current_segment['roles'],
+            current_segment['start_index'],
+            current_segment['end_index']
+        ))
+
+        return segments
 
     def get_context_summary(self) -> Dict:
         """
-        Get a summary of the current context state.
+        获取当前上下文状态的摘要
 
         Returns:
-            Dictionary with context statistics
+            包含上下文统计信息的字典
         """
         return {
-            "total_messages": len(self.message_vectors),
-            "total_segments": len(self.segments),
-            "role_counts": {
-                role: len(vectors) for role, vectors in self.role_vectors.items()
-            },
-            "last_update": self.last_update_time,
+            "total_vectors": len(self.vector_map),
+            "history_assistant_count": len(self.history_assistant_vectors),
+            "history_user_count": len(self.history_user_vectors),
+            "fuzzy_threshold": self.fuzzy_threshold,
+            "decay_rate": self.decay_rate,
+            "max_context_window": self.max_context_window,
         }
+
 
