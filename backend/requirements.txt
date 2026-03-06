@@ -24,6 +24,7 @@ python-dotenv==1.0.0
 pyyaml>=6.0
 tiktoken>=0.5.0  # Token 计算 (Embedding, 文本分块)
 pytz>=2023.3  # 时区处理 (时间表达式解析)
+aiofiles>=23.0.0  # 异步文件操作
 
 # 数学和向量计算 (RAG 插件)
 numpy>=1.24.0  # 向量运算
@@ -36,3 +37,7 @@ genie-tts>=0.1.0
 pytest>=7.4.0
 pytest-mock>=3.12.0
 pytest-asyncio>=0.21.0
+
+# 注意：vector_db (VexusIndex) 是 Rust 模块，需要通过 maturin 编译
+# 编译命令：cd vector-db && maturin develop --release
+# 或使用：make build-vector-db

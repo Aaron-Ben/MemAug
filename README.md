@@ -4,17 +4,16 @@
 
 ## 功能特性
 
-### 💬 双模式对话
-- **RPG 风格对话**：沉浸式角色扮演体验
-- **传统聊天模式**：经典消息列表界面
+### 💬 智能对话
 - **流式响应**：实时交互体验
 - **语音输入**：支持中英日韩粤语识别
 - **语音合成**：TTS 语音输出
+- **对话历史**：自动保存和恢复对话上下文
 
 ### 🎭 角色定制
 - 支持自定义 AI 角色性格、行为偏好
-- 角色模板系统，快速创建不同类型的陪伴角色
 - 用户个性化偏好设置
+- 自定义提示词系统
 
 ### 🔧 工具调用系统 (VCPToolBox 模式)
 - **插件化架构**：模块化扩展功能，支持多种协议
@@ -35,6 +34,11 @@
    - 支持时间表达式解析
    - 自动分块处理长文本
 
+3. **DailyNote（日记管理）**
+   - AI 自动创建和更新日记
+   - 支持智能内容提取
+   - 自动标签生成
+
 ### 📝 智能日记
 - **AI 自动触发**：每次对话后 AI 自动评估是否值得记录
   - 智能判断对话重要性
@@ -47,6 +51,11 @@
   - 基于文件系统存储
   - 支持创建、更新、删除日记
   - AI 可以主动修正和补充已有日记
+- **向量索引系统**：
+  - 自动将日记文件分块并向量化
+  - 支持高效语义检索和相似度搜索
+  - 懒加载索引优化内存使用
+  - 延迟保存策略减少磁盘 I/O
 - **记忆集成**：
   - 后续对话自动参考相关日记内容
   - AI 能够记住与用户的重要时刻
@@ -62,17 +71,18 @@
   - `GET /api/v1/chat/logs/list` - 列出所有日志文件
   - `GET /api/v1/chat/logs/{date}` - 获取指定日期日志
 
-### 🎨 精美 UI
-- 动漫风格主题设计
-- RPG 风格对话界面
+### 🎨 用户界面
+- React + TypeScript 实现
 - 响应式布局，支持移动端
+- 实时消息流式显示
 
 ## 技术栈
 
 ### 后端
 - **框架**: FastAPI
 - **数据库**: SQLite + SQLAlchemy 2.0
-- **LLM & Embedding**: OpenRouter
+- **LLM & Embedding**: OpenRouter (支持 BGE-M3 等模型)
+- **向量索引**: VexusIndex (自研向量数据库)
 - **插件系统**: 自定义插件管理器，支持 stdio/direct 协议
 - **语音识别**: Sherpa-ONNX SenseVoice
 - **语音合成**: Genie-TTS (GPT-SoVITS)
@@ -98,33 +108,35 @@ emotional-companionship/
 │   │   │       └── chat_history.py  # 对话历史接口
 │   │   ├── config/            # 配置模块
 │   │   ├── models/            # 数据模型
+│   │   │   ├── database.py    # 数据库模型（日记、向量存储）
+│   │   │   └── ...
 │   │   ├── schemas/           # Pydantic 模型
 │   │   ├── services/          # 业务逻辑
 │   │   │   ├── chat_service.py         # 对话服务（含工具调用）
 │   │   │   ├── character_service.py    # 角色服务
-│   │   │   ├── llm.py                # LLM 服务（含超时配置）
+│   │   │   ├── llm.py                   # LLM 服务
 │   │   │   ├── chat_history_service.py  # 对话历史服务
-│   │   │   └── diary/                # 日记服务
+│   │   │   ├── chunk_text.py            # 文本分块服务
+│   │   │   ├── embedding.py             # 向量化服务
+│   │   │   └── diary/                   # 日记服务
+│   │   │       └── file_service.py
 │   │   ├── utils/            # 工具模块
 │   │   │   ├── file_logger.py         # 文件日志记录
 │   │   │   └── json.py               # JSON 工具
-│   │   └── characters/       # 角色模块
-│   │       ├── asr.py          # 语音识别
-│   │       └── tts.py          # 语音合成
+│   │   ├── characters/       # 角色模块
+│   │   │   ├── asr.py          # 语音识别
+│   │   │   └── tts.py          # 语音合成
+│   │   └── vector_index.py  # 向量索引系统
 │   ├── plugins/           # 插件系统
 │   │   ├── plugin.py              # 插件管理器
 │   │   ├── tool_call_parser.py   # 工具调用解析器
 │   │   ├── tool_executor.py      # 工具执行器
-│   │   ├── deepmemo/            # DeepMemo 插件（Rust）
-│   │   └── rag_daily/           # RAG 日记检索插件
+│   │   ├── daily_note/           # DailyNote 插件
+│   │   ├── deepmemo/             # DeepMemo 插件（Rust）
+│   │   └── rag_daily/            # RAG 日记检索插件
+│   ├── tests/             # 测试目录
+│   │   └── test_vector_index.py  # 向量索引测试
 │   ├── resources/        # 资源文件
-│   │   ├── characters/     # 角色配置
-│   │   │   ├── sister.yaml      # 基础角色
-│   │   │   └── sister_v2.yaml  # 扩展角色示例
-│   │   └── archetypes/     # 角色模板
-│   │       ├── emotional_companion.yaml
-│   │       ├── mentor.yaml
-│   │       └── friend.yaml
 │   └── main.py           # 应用入口
 │
 ├── frontend/                  # 前端应用
@@ -138,8 +150,11 @@ emotional-companionship/
 ├── data/                  # 数据目录
 │   ├── chat/           # 对话历史
 │   ├── diary/          # 日记存储
-│   └── logs/           # 日志文件（today.txt + YYYY-MM-DD.txt）
+│   ├── logs/           # 日志文件（today.txt + YYYY-MM-DD.txt）
+│   └── characters/     # 角色数据（日记、配置等）
+├── VectorStore/         # 向量索引存储目录
 │
+├── Makefile             # 开发命令
 └── README.md            # 项目文档
 ```
 
@@ -148,27 +163,37 @@ emotional-companionship/
 ### 环境要求
 - Python 3.13+
 - Node.js 18+
+- Rust 工具链（用于编译 vector-db）
 - OpenRouter API Key
 
-### 后端设置
+### 安装依赖
 
-1. 进入后端目录：
+**后端依赖：**
 ```bash
 cd backend
-```
-
-2. 创建虚拟环境：
-```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-```
-
-3. 安装依赖：
-```bash
 pip install -r requirements.txt
 ```
 
-4. 配置环境变量（复制 `.env.example` 到 `.env` 并填入你的 API Key）：
+**前端依赖：**
+```bash
+make install-frontend
+# 或
+cd frontend && npm install
+```
+
+**编译 Rust 模块：**
+```bash
+make build-vector-db
+# 或
+cd vector-db && maturin develop --release
+```
+
+### 配置环境变量
+
+复制 `backend/.env.example` 到 `backend/.env` 并填入你的 API Key：
+
 ```env
 # OpenRouter API Key (必需)
 OPENROUTER_API_KEY=sk-or-v1-xxxxx
@@ -179,40 +204,24 @@ OPENROUTER_MODEL=deepseek/deepseek-v3.2
 EmbeddingModel=baai/bge-m3
 ```
 
-5. 运行数据库迁移：
+### 初始化数据库
+
 ```bash
-python migrate_extensions.py
+cd backend
+python -c "from app.models.database import init_db; init_db()"
 ```
 
-6. 启动后端服务：
+### 启动项目
+
+**一键启动（推荐）：**
 ```bash
-python -m uvicorn app.main:app --reload
+make dev
 ```
+
+这将自动启动前端和后端服务。
+
 
 后端将运行在 `http://localhost:8000`
-
-### 前端设置
-
-1. 进入前端目录：
-```bash
-cd frontend
-```
-
-2. 安装依赖：
-```bash
-npm install
-```
-
-3. 配置 API 地址（创建 `.env` 文件）：
-```env
-VITE_API_URL=http://localhost:8000
-```
-
-4. 启动开发服务器：
-```bash
-npm run dev
-```
-
 前端将运行在 `http://localhost:5173`
 
 ## API 文档
@@ -224,7 +233,7 @@ npm run dev
 ### 核心 API 端点
 
 #### 对话
-- `POST /api/v1/chat/` - 发送消息（流式响应）
+- `POST /api/v1/chat/` - 发送消息
 - `POST /api/v1/chat/stream` - SSE 流式对话
 - `POST /api/v1/chat/voice` - 语音识别
 - `POST /api/v1/chat/tts` - 文字转语音
@@ -234,25 +243,27 @@ npm run dev
 - `GET /api/v1/chat/logs/{date}` - 获取指定日期日志
 
 #### 角色
-- `GET /api/v1/character/` - 获取角色列表
-- `GET /api/v1/character/{id}` - 获取角色详情
-- `PUT /api/v1/character/preferences` - 更新用户偏好
-- `GET /api/v1/character/preferences` - 获取用户偏好
+- `GET /api/v1/character/user/list` - 获取角色列表
+- `GET /api/v1/character/user/{character_id}` - 获取角色详情
+- `POST /api/v1/character/create` - 创建新角色
+- `PATCH /api/v1/character/user/{character_id}` - 更新角色提示词
+- `DELETE /api/v1/character/user/{character_id}` - 删除角色
 
 #### 日记
 - `GET /api/v1/diary/list` - 获取日记列表
 - `GET /api/v1/diary/latest` - 获取最新日记
 - `GET /api/v1/diary/names` - 获取日记本名称列表
+- `GET /api/v1/diary/sync` - 同步日记到数据库
+- `GET /api/v1/diary/{path:path}` - 获取指定日记
 - `POST /api/v1/diary/create` - 创建日记
 - `POST /api/v1/diary/ai-update` - AI 更新日记（查找替换）
-- `DELETE /api/v1/diary/{path}` - 删除日记
+- `DELETE /api/v1/diary/{path:path}` - 删除日记
 
 #### 对话历史
-- `POST /api/v1/chat_history/topics` - 创建新的对话历史
-- `GET /api/v1/chat_history/topic/{topic_id}` - 获取特定对话历史
-- `PUT /api/v1/chat_history/topic/{topic_id}` - 更新对话历史
-- `DELETE /api/v1/chat_history/topic/{topic_id}` - 删除对话历史
-- `GET /api/v1/chat_history/topics` - 获取所有对话历史
+- `POST /api/v1/chat/topics` - 创建新的对话主题
+- `GET /api/v1/chat/topics` - 列出对话主题
+- `GET /api/v1/chat/topics/{topic_id}/history` - 获取对话历史
+- `DELETE /api/v1/chat/topics/{topic_id}` - 删除对话主题
 
 ## 工具调用开发指南
 
@@ -276,6 +287,7 @@ tool_name:「始」插件名「末」,
 |---------|--------|------|------|
 | DeepMemo | stdio | 向量语义检索 | `plugins/deepmemo/config.env` |
 | RAGDailyPlugin | direct | 日记 RAG 检索 | `plugins/rag_daily/config.env` |
+| DailyNote | direct | 日记创建和更新 | - |
 
 ### 创建新插件
 
@@ -336,33 +348,57 @@ tool_name:「始」插件名「末」,
 
 ## 配置说明
 
+### 向量索引系统
+
+系统内置向量索引功能，用于高效存储和检索日记内容：
+
+**核心特性：**
+- 自动文本分块（基于 token 限制）
+- 批量向量化处理
+- 懒加载索引（按需加载）
+- 延迟保存策略（减少磁盘 I/O）
+- 支持增量更新
+
+**使用方法：**
+```python
+from app.vector_index import VectorIndex, VectorIndexConfig
+
+# 创建索引实例
+config = VectorIndexConfig()
+vector_index = VectorIndex(config)
+
+# 处理单个日记文件
+result = await vector_index.process_diary_file(
+    character_id="sister_001",
+    file_path="2024-01-15.txt"
+)
+
+# 批量同步角色的所有日记
+result = await vector_index.sync_character_diaries("sister_001")
+
+# 保存所有索引到磁盘
+await vector_index.flush_all()
+```
+
+**索引文件位置：**
+- 存储目录：`VectorStore/`
+- 文件命名：`index_diary_{MD5}.usearch`
+- 每个角色有独立的索引文件
+
+**运行测试：**
+```bash
+cd backend
+python tests/test_vector_index.py
+```
+
 ### 环境变量 (.env)
 
 | 变量 | 说明 | 默认值 | 必需 |
 |------|------|--------|------|
 | `OPENROUTER_API_KEY` | OpenRouter API Key (LLM + Embedding) | - | ✅ |
-| `API_URL` | OpenRouter API 地址 | `https://openrouter.ai/api/v1` | ❌ |
-| `OPENROUTER_MODEL` | LLM 模型名称 | `anthropic/claude-3.5-sonnet` | ❌ |
-
-### 角色配置
-
-角色配置文件位于 `backend/app/resources/characters/`：
-- **基础角色**：传统配置，无需修改即可运行
-- **扩展角色**：添加扩展功能配置，启用高级特性
-
-### 角色模板
-
-预设模板位于 `backend/app/resources/archetypes/`：
-- **emotional_companion**：情感陪伴者，注重情感连接
-- **mentor**：导师，注重指导和知识分享
-- **friend**：朋友，轻松平等的交流
-
-### 添加新角色
-
-1. 在 `backend/app/resources/characters/` 创建新的 YAML 文件
-2. 从模板复制或从头定义
-3. 可选：添加扩展功能配置
-4. 重启后端服务自动加载
+| `API_URL` | OpenRouter API 地址 | `https://openrouter.ai/api/v1` | ✅ |
+| `OPENROUTER_MODEL` | LLM 模型名称 | `anthropic/claude-3.5-sonnet` | ✅ |
+| `EmbeddingModel` | Embedding 模型名称 | `baai/bge-m3` | ✅ |
 
 ## 日志说明
 
