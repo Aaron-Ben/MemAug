@@ -32,7 +32,7 @@ export function useChat(options?: UseChatOptions) {
         const stored = localStorage.getItem(`${STORAGE_KEY}_${characterId}`);
         if (stored) {
           const parsed = JSON.parse(stored);
-          setMessages(parsed.map((msg: any) => ({
+          setMessages(parsed.map((msg: DisplayMessage) => ({
             ...msg,
             timestamp: new Date(msg.timestamp),
           })));

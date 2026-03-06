@@ -1,11 +1,12 @@
 /** Custom hook for character management */
 
 import { useState, useEffect, useCallback } from 'react';
-import { getCharacter, listCharacters, getConversationStarter } from '../services/characterService';
-import type { CharacterTemplate } from '../types/character';
+import { getUserCharacter, listAllCharacters } from '../services/characterService';
+import { getChatStarter } from '../services/chatService';
+import type { UserCharacter } from '../types/character';
 
 export function useCharacter(characterId: string) {
-  const [character, setCharacter] = useState<CharacterTemplate | null>(null);
+  const [character, setCharacter] = useState<UserCharacter | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -14,7 +15,7 @@ export function useCharacter(characterId: string) {
     setError(null);
 
     try {
-      const data = await getCharacter(characterId);
+      const data = await getUserCharacter(characterId);
       setCharacter(data.character);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load character');
@@ -29,7 +30,7 @@ export function useCharacter(characterId: string) {
 
   const getStarter = useCallback(async () => {
     try {
-      const data = await getConversationStarter(characterId);
+      const data = await getChatStarter(characterId);
       return data.starter;
     } catch (err) {
       console.error('Failed to get conversation starter:', err);
@@ -41,7 +42,7 @@ export function useCharacter(characterId: string) {
 }
 
 export function useCharacters() {
-  const [characters, setCharacters] = useState<CharacterTemplate[]>([]);
+  const [characters, setCharacters] = useState<UserCharacter[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,8 +52,8 @@ export function useCharacters() {
       setError(null);
 
       try {
-        const data = await listCharacters();
-        setCharacters(data.characters);
+        const data = await listAllCharacters();
+        setCharacters(data);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load characters');
       } finally {

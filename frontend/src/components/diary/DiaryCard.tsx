@@ -26,6 +26,7 @@ export const DiaryCard: React.FC<DiaryCardProps> = ({
 
   // Extract tag from content
   const tagMatch = diary.content.match(/Tag:\s*(.+)$/m);
+  const tag = tagMatch ? tagMatch[1].trim().split(',').map(t => t.trim()).filter(Boolean)[0] : null;
   const displayContent = tagMatch
     ? diary.content.replace(/Tag:\s*(.+)$/m, '').trim()
     : diary.content;
@@ -69,11 +70,11 @@ export const DiaryCard: React.FC<DiaryCardProps> = ({
             <span className="text-xl">📔</span>
             {dateStr}
           </h3>
-          <div className="flex gap-2 flex-wrap">
+          {tag && (
             <span className="inline-flex items-center px-2.5 py-1 bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 text-xs font-medium rounded-full">
-              {diary.diary_name}
+              {tag}
             </span>
-          </div>
+          )}
         </div>
 
         {/* Content preview */}

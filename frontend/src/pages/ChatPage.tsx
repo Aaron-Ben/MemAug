@@ -9,6 +9,7 @@ import { TopicSidebar } from '../components/topics';
 import { CharacterSelector } from '../components/character/CharacterSelector';
 import { useChat } from '../hooks/useChat';
 import { useTopics } from '../hooks/useTopics';
+import { useCharacter } from '../hooks/useCharacter';
 import backgroundImage from '/background/image.png';
 import type { DiaryEntry } from '../services/diaryService';
 import type { DisplayMessage } from '../types/chat';
@@ -73,6 +74,9 @@ export const ChatPage: React.FC = () => {
     characterId: selectedCharacterId,
     topicId: currentTopicId ?? undefined,
   });
+
+  // Get current character info
+  const { character } = useCharacter(selectedCharacterId);
 
   // Handle topic selection
   async function handleTopicChange(topicId: number | null, topicMessages: DisplayMessage[]) {
@@ -210,6 +214,7 @@ export const ChatPage: React.FC = () => {
         />
         <DiaryListModal
           characterId={selectedCharacterId}
+          characterName={character?.name}
           isOpen={showDiaries}
           onClose={() => setShowDiaries(false)}
           onSelectDiary={handleSelectDiary}
@@ -219,6 +224,7 @@ export const ChatPage: React.FC = () => {
           diary={selectedDiary}
           isOpen={showDiaryDetail}
           onClose={() => setShowDiaryDetail(false)}
+          characterName={character?.name}
         />
         <DiaryEditModal
           isOpen={showDiaryEdit}

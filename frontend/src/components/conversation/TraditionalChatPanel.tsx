@@ -123,7 +123,7 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
       setRecordingState('idle');
       onVoiceInputEnd?.();
     }
-  }, [recordingState, input, onVoiceInputEnd]);
+  }, [recordingState, input, onVoiceInputEnd, characterId]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);

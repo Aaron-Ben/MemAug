@@ -1,6 +1,6 @@
 /** Custom hook for topic management */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   createTopic,
   listTopics,
@@ -38,6 +38,12 @@ export function useTopics({ characterId, onTopicChange }: UseTopicsOptions): Use
   const [currentTopicId, setCurrentTopicId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Use ref for onTopicChange to avoid triggering effect changes
+  const onTopicChangeRef = useRef(onTopicChange);
+  useEffect(() => {
+    onTopicChangeRef.current = onTopicChange;
+  }, [onTopicChange]);
 
   // Load current topic from localStorage
   useEffect(() => {
@@ -83,25 +89,28 @@ export function useTopics({ characterId, onTopicChange }: UseTopicsOptions): Use
     const loadAndSelectFirstTopic = async () => {
       const topicList = await refreshTopics();
       // Auto-select the first topic for the new character
-      // (if there's at least one topic and current topic doesn't belong to this character)
-      if (topicList.length > 0) {
-        const firstTopicId = topicList[0].topic.topic_id;
-        // Check if current topic belongs to this character
-        const currentTopicBelongsToThisChar = topicList.some(
-          t => t.topic.topic_id === currentTopicId
-        );
-        if (!currentTopicBelongsToThisChar) {
-          // Current topic doesn't belong to this character, switch to first topic
-          setCurrentTopicId(firstTopicId);
-          localStorage.setItem(TOPIC_STORAGE_KEY, String(firstTopicId));
-          onTopicChange?.(firstTopicId, []);
+      // Use functional setState to get latest currentTopicId without dependency
+      setCurrentTopicId((prevTopicId) => {
+        if (topicList.length > 0) {
+          const firstTopicId = topicList[0].topic.topic_id;
+          // Check if current topic belongs to this character
+          const currentTopicBelongsToThisChar = topicList.some(
+            t => t.topic.topic_id === prevTopicId
+          );
+          if (!currentTopicBelongsToThisChar) {
+            // Current topic doesn't belong to this character, switch to first topic
+            localStorage.setItem(TOPIC_STORAGE_KEY, String(firstTopicId));
+            onTopicChangeRef.current?.(firstTopicId, []);
+            return firstTopicId;
+          }
+          return prevTopicId;
+        } else {
+          // No topics for this character, clear current topic
+          localStorage.removeItem(TOPIC_STORAGE_KEY);
+          onTopicChangeRef.current?.(null, []);
+          return null;
         }
-      } else {
-        // No topics for this character, clear current topic
-        setCurrentTopicId(null);
-        localStorage.removeItem(TOPIC_STORAGE_KEY);
-        onTopicChange?.(null, []);
-      }
+      });
     };
     loadAndSelectFirstTopic();
   }, [characterId, refreshTopics]);

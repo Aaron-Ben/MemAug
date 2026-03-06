@@ -1,6 +1,6 @@
 /** Diary list modal component - Refined elegant style */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { listDiaries, deleteDiary, type DiaryEntry, extractDateFromPath } from '../../services/diaryService';
 import { DiaryDeleteModal } from './DiaryDeleteModal';
 import { DiaryTimeline } from './DiaryTimeline';
@@ -28,13 +28,7 @@ export const DiaryListModal: React.FC<DiaryListModalProps> = ({
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [diaryToDelete, setDiaryToDelete] = useState<DiaryEntry | null>(null);
 
-  useEffect(() => {
-    if (isOpen) {
-      loadDiaries();
-    }
-  }, [isOpen, characterId]);
-
-  const loadDiaries = async () => {
+  const loadDiaries = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -46,7 +40,13 @@ export const DiaryListModal: React.FC<DiaryListModalProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [characterId]);
+
+  useEffect(() => {
+    if (isOpen) {
+      loadDiaries();
+    }
+  }, [isOpen, loadDiaries]);
 
   const handleDeleteClick = (diary: DiaryEntry, e: React.MouseEvent) => {
     e.stopPropagation();

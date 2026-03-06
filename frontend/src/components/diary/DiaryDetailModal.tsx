@@ -7,12 +7,14 @@ interface DiaryDetailModalProps {
   diary: DiaryEntry | null;
   isOpen: boolean;
   onClose: () => void;
+  characterName?: string;
 }
 
 export const DiaryDetailModal: React.FC<DiaryDetailModalProps> = ({
   diary,
   isOpen,
-  onClose
+  onClose,
+  characterName
 }) => {
   if (!isOpen || !diary) return null;
 
@@ -34,7 +36,7 @@ export const DiaryDetailModal: React.FC<DiaryDetailModalProps> = ({
             <div className="flex-1">
               <div className="flex items-center gap-3 mb-2">
                 <span className="text-3xl">📔</span>
-                <h2 className="text-2xl font-bold text-neutral-800 dark:text-neutral-100">妹妹的日记</h2>
+                <h2 className="text-2xl font-bold text-neutral-800 dark:text-neutral-100">{characterName ? `${characterName}的日记` : '日记'}</h2>
               </div>
               <p className="text-sm text-neutral-600 dark:text-neutral-400">
                 {date.toLocaleDateString('zh-CN', {
@@ -70,7 +72,7 @@ export const DiaryDetailModal: React.FC<DiaryDetailModalProps> = ({
 
           {/* Metadata */}
           <div className="pt-4 border-t border-neutral-200 dark:border-neutral-700 text-xs text-neutral-500 dark:text-neutral-400 space-y-1">
-            <p>日记本: {diary.diary_name}</p>
+            <p>角色 ID: {diary.character_id}</p>
             <p>文件路径: {diary.path}</p>
             <p>修改时间: {new Date(diary.mtime * 1000).toLocaleString('zh-CN')}</p>
           </div>
