@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.services.diary.file_service import DiaryFileService
 from app.models.diary import DiaryEntry
+from plugins.plugin import plugin_manager
 
 
 # Create router
@@ -147,7 +148,7 @@ async def create_diary(
     diary_service: DiaryFileService = Depends(get_diary_file_service)
 ):
     """
-    AI创建日记
+    AI创建日记（通过 DailyNote 插件）
 
     Request Body:
     ```json
@@ -160,20 +161,41 @@ async def create_diary(
     ```
     """
     try:
-        result = diary_service.create_diary(
-            character_id=request.character_id,
-            date=request.date,
-            content=request.content,
-            tag=request.tag
-        )
+        # 确保插件已加载
+        if not plugin_manager.plugins:
+            await plugin_manager.load_plugins()
 
-        if result["status"] == "success":
-            return {
-                "message": result["message"],
-                "diary": DiaryEntry(**result["data"])
-            }
+        # 通过 DailyNote 插件创建日记
+        result = await plugin_manager.process_tool_call("DailyNote", {
+            "command": "create",
+            "maid": request.character_id,
+            "Date": request.date,
+            "Content": request.content,
+            "Tag": request.tag
+        })
+
+        if result.get("status") == "success":
+            # 读取创建的日记并返回
+            diary_path = result.get("path")
+            diary = diary_service.read_diary(diary_path)
+            if diary:
+                return {
+                    "message": result.get("message", "日记创建成功"),
+                    "diary": DiaryEntry(**diary)
+                }
+            else:
+                # 如果读取失败，返回基本信息
+                return {
+                    "message": result.get("message", "日记创建成功"),
+                    "diary": DiaryEntry(
+                        path=diary_path,
+                        character_id=request.character_id,
+                        content=request.content,
+                        mtime=0
+                    )
+                }
         else:
-            raise HTTPException(status_code=400, detail=result["message"])
+            raise HTTPException(status_code=400, detail=result.get("error", "创建日记失败"))
     except HTTPException:
         raise
     except ValueError as e:
@@ -188,7 +210,7 @@ async def ai_update_diary(
     diary_service: DiaryFileService = Depends(get_diary_file_service)
 ):
     """
-    AI更新日记
+    AI更新日记（通过 DailyNote 插件）
 
     Request Body:
     ```json
@@ -202,21 +224,39 @@ async def ai_update_diary(
     如果不指定 character_id，会在所有角色的日记中搜索。
     """
     try:
-        result = diary_service.update_diary(
-            target=request.target,
-            replace=request.replace,
-            character_id=request.character_id
-        )
+        # 确保插件已加载
+        if not plugin_manager.plugins:
+            await plugin_manager.load_plugins()
 
-        if result["status"] == "success":
-            return {
-                "message": result["message"],
-                "path": result["path"],
-                "old_content": request.target,
-                "new_content": request.replace
-            }
+        # 通过 DailyNote 插件更新日记
+        result = await plugin_manager.process_tool_call("DailyNote", {
+            "command": "update",
+            "maid": request.character_id,
+            "target": request.target,
+            "replace": request.replace
+        })
+
+        if result.get("status") == "success":
+            # 读取更新后的日记并返回
+            diary_path = result.get("path")
+            diary = diary_service.read_diary(diary_path)
+            if diary:
+                return {
+                    "message": result.get("message", "日记更新成功"),
+                    "path": diary_path,
+                    "old_content": request.target,
+                    "new_content": request.replace,
+                    "diary": DiaryEntry(**diary)
+                }
+            else:
+                return {
+                    "message": result.get("message", "日记更新成功"),
+                    "path": diary_path,
+                    "old_content": request.target,
+                    "new_content": request.replace
+                }
         else:
-            raise HTTPException(status_code=404, detail=result["message"])
+            raise HTTPException(status_code=404, detail=result.get("error", "更新日记失败"))
     except HTTPException:
         raise
     except Exception as e:

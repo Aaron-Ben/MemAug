@@ -1,0 +1,30 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "DailyNote",
+  "displayName": "日记系统",
+  "version": "1.0.0",
+  "description": "日记创建与更新系统",
+  "author": "Roo",
+  "pluginType": "synchronous",
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "entryPoint": {
+    "command": "python daily_note.py"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "DailyNote.create",
+        "description": "**创建新日记** - 当对话包含新的重要信息时使用\n\n**何时使用：**\n- 对话包含新的重要信息（如用户计划、约定、想法等）\n- 用户提到值得记住的事情\n- 对话内容对将来有参考价值\n- 情感交流的重要时刻\n\n**何时跳过：**\n- 闲聊或无关紧要的内容\n- 已经记录过的信息重复\n- 纯粹的问候或告别\n\n**日记格式要求：**\nContent 必须包含以下部分：\n1. 【对话主题】简述本次对话的核心内容\n2. 【对话记录】简明的对话摘要\n3. 【关键信息】3-5个要点\n4. 【我的感受】你的感受或想法\n5. Tag: 3-5个关键词（最后一行，必须有）\n\n**参数说明：**\n- command: \"create\" (固定值，插件内部使用)\n- maid: 必需。角色 ID，使用占位符 {CHARACTER_ID}\n- Date: 必需。日记日期，使用占位符 {TODAY}\n- Content: 必需。完整日记内容，必须包含 Tag 行\n- Tag: 可选。独立标签字段，会覆盖 Content 中的 Tag 行",
+        "example": "{\"command\": \"create\", \"maid\": \"{CHARACTER_ID}\", \"Date\": \"{TODAY}\", \"Content\": \"【对话主题】讨论学习计划\\n\\n【对话记录】\\n用户：想要制定学习计划\\n我：建议分阶段进行\\n\\n【关键信息】\\n- 用户想制定详细学习计划\\n- 建议分阶段进行更有效\\n- 需要定期回顾进度\\n\\n【我的感受】\\n用户很有学习热情。\\n\\nTag: 学习计划, 分阶段\"}"
+      },
+      {
+        "command": "DailyNote.update",
+        "description": "**更新现有日记** - 当用户需要修正或更新之前的日记记录时使用\n\n**何时使用：**\n- 用户提到需要修正、补充或更新之前的日记记录\n- 用户说\"改一下\"、\"更新一下\"等\n\n**参数说明：**\n- command: \"update\" (固定值，插件内部使用)\n- maid: 必需。角色 ID，使用占位符 {CHARACTER_ID}\n- target: 必需。要查找和替换的旧内容（至少15字符）\n- replace: 必需。新的内容",
+        "example": "{\"command\": \"update\", \"maid\": \"{CHARACTER_ID}\", \"target\": \"用户计划去北京出差\", \"replace\": \"用户计划去上海出差\"}"
+      }
+    ]
+  }
+}

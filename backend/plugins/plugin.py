@@ -23,6 +23,8 @@ class PluginManager:
         self.message_preprocessors = {}
         # 存储服务模块
         self.service_modules = {}
+        # 存储工具别名映射: "DailyNote.create" -> ("DailyNote", {"command": "create"})
+        self.tool_aliases = {}
         self.web_socket_server = None
         self.vector_db_manager = None
         self.project_base_path = None
@@ -113,6 +115,14 @@ class PluginManager:
         Returns:
             插件执行结果
         """
+        # 解析别名
+        if tool_name in self.tool_aliases:
+            real_plugin_name, additional_args = self.tool_aliases[tool_name]
+            # 合并别名参数和用户提供的参数（用户参数优先）
+            tool_args = {**additional_args, **tool_args}
+            tool_name = real_plugin_name
+            logger.debug(f"[PluginManager] Resolved alias '{tool_name}' -> '{real_plugin_name}' with args: {additional_args}")
+
         plugin = self.plugins.get(tool_name)
 
         if not plugin:
@@ -206,10 +216,11 @@ class PluginManager:
 
     # ========== 插件加载 ==========
     async def load_plugins(self):
-        """加载所有插件 (deepmemo 和 rag_daily)"""
+        """加载所有插件 (deepmemo, rag_daily, daily_note)"""
         logger.info("[PluginManager] Loading all plugins...")
         await self._load_deepmemo_plugin()
         await self._load_rag_daily_plugin()
+        await self._load_daily_note_plugin()
         logger.info(f"[PluginManager] Plugin loading complete. Loaded plugins: {list(self.plugins.keys())}")
 
     async def _load_deepmemo_plugin(self):
@@ -337,6 +348,64 @@ class PluginManager:
         except Exception as error:
             print(f"[PluginManager] Error loading RAGDailyPlugin:", error)
             logger.error(f"[PluginManager] Error loading RAGDailyPlugin: {error}", exc_info=True)
+
+    async def _load_daily_note_plugin(self):
+        """加载 stdio 协议的 DailyNote 插件"""
+        logger.info("[PluginManager] Loading DailyNote plugin...")
+        plugin_path = PLUGIN_DIR / "daily_note"
+        manifest_path = plugin_path / MANIFEST_FILE_NAME
+
+        try:
+            # 1. 读取 manifest
+            async with aiofiles.open(manifest_path, "r", encoding="utf-8") as f:
+                manifest_content = await f.read()
+            manifest = json.loads(manifest_content)
+            manifest["basePath"] = str(plugin_path)
+
+            # 2. 读取 config.env（如果存在）
+            try:
+                env_path = plugin_path / "config.env"
+                if env_path.exists():
+                    manifest["pluginSpecificEnvConfig"] = dotenv_values(env_path)
+                    logger.info(f"[PluginManager] Loaded config.env from {env_path}")
+                else:
+                    manifest["pluginSpecificEnvConfig"] = {}
+                    logger.info(f"[PluginManager] No config.env found at {env_path}")
+            except Exception as e:
+                manifest["pluginSpecificEnvConfig"] = {}
+                logger.warning(f"[PluginManager] Error loading config.env: {e}")
+
+            # 3. 保存 manifest (stdio 协议不需要加载模块)
+            self.plugins[manifest["name"]] = manifest
+
+            # 4. 处理工具别名（从 invocationCommands 生成）
+            capabilities = manifest.get("capabilities", {})
+            invocation_commands = capabilities.get("invocationCommands", [])
+            plugin_name = manifest["name"]
+
+            for cmd in invocation_commands:
+                cmd_name = cmd.get("command", "")
+                # 如果命令名包含 "."，说明是子命令，需要注册别名
+                if "." in cmd_name:
+                    # 提取子命令部分，例如 "DailyNote.create" -> "create"
+                    subcommand = cmd_name.split(".")[-1]
+                    # 解析 example 中的 command 参数
+                    example = cmd.get("example", "")
+                    additional_args = {"command": subcommand}
+
+                    # 注册别名映射
+                    self.tool_aliases[cmd_name] = (plugin_name, additional_args)
+                    logger.info(f"[PluginManager] Registered tool alias: '{cmd_name}' -> '{plugin_name}' with command='{subcommand}'")
+
+            print(f"[PluginManager] Loaded: {manifest['displayName']} ({manifest['name']}) - stdio protocol")
+            logger.info(f"[PluginManager] Successfully loaded: {manifest['displayName']} ({manifest['name']}) - stdio protocol")
+
+        except FileNotFoundError:
+            print(f"[PluginManager] DailyNote plugin manifest not found, skipping...")
+            logger.warning(f"[PluginManager] DailyNote plugin manifest not found at {manifest_path}")
+        except Exception as error:
+            print(f"[PluginManager] Error loading DailyNote plugin:", error)
+            logger.error(f"[PluginManager] Error loading DailyNote plugin: {error}", exc_info=True)
 
     # ========== 关闭 ==========
     async def shutdown_all_plugins(self):

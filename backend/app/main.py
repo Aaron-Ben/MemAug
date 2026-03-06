@@ -31,7 +31,7 @@ file_handler = DailyFileHandler()
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
 
 # Add file handler to loggers
-for logger_name in ["app.services.chat_service", "plugins.tool_executor", "plugins.plugin", "plugins.tool_call_parser"]:
+for logger_name in ["app.services.chat_service", "plugins.tool_executor", "plugins.plugin", "plugins.tool_call_parser", "app.api.v1.chat", "app.api.v1.diary"]:
     logging.getLogger(logger_name).addHandler(file_handler)
 
 

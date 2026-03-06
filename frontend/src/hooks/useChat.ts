@@ -166,13 +166,16 @@ export function useChat(options?: UseChatOptions) {
       }
 
       // Finalize the message
-      setMessages((prev) => prev.map((msg) =>
-        msg.id === streamingId
-          ? { ...msg, id: `assistant-${Date.now()}` }
-          : msg
-      ));
-
-      saveHistory(messages);
+      setMessages((prev) => {
+        const updated = prev.map((msg) =>
+          msg.id === streamingId
+            ? { ...msg, id: `assistant-${Date.now()}` }
+            : msg
+        );
+        // Save the updated messages (not the old messages from closure)
+        saveHistory(updated);
+        return updated;
+      });
     } catch (err) {
       errorRef.current = err instanceof Error ? err.message : 'Failed to send message';
       // Remove the streaming message placeholder

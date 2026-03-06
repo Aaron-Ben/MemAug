@@ -76,19 +76,21 @@ async def extract_and_save_diary(
     character_id: str,
     user_id: str,
     conversation_messages: List[Dict[str, str]],
-    llm: LLM
+    llm: LLM,
+    plugin_manager
 ):
     """
-    Extract and save diary from conversation (async).
+    Extract and save diary from conversation using DailyNote plugin (async).
 
     This runs in the background after a response is sent.
     AI will evaluate if the conversation is worth recording and extract diary content.
 
     Args:
-        character_id: Character ID (used as diary_name)
+        character_id: Character ID (used as maid parameter)
         user_id: User ID
         conversation_messages: Current conversation messages
         llm: LLM instance for evaluation and extraction
+        plugin_manager: PluginManager for calling DailyNote plugin
     """
     try:
         logger.info(f"Evaluating diary extraction for {user_id}/{character_id}")
@@ -134,10 +136,7 @@ async def extract_and_save_diary(
             logger.info(f"Diary evaluation: skipped for {user_id}/{character_id}")
             return
 
-        from app.services.diary.file_service import DiaryFileService
         from datetime import datetime
-
-        diary_service = DiaryFileService()
 
         # Step 2: Handle UPDATE case
         if "UPDATE" in evaluation.upper():
@@ -147,17 +146,18 @@ async def extract_and_save_diary(
                 target = parts[1].strip()
                 replace_content = parts[2].strip()
 
-                # Use update_diary
-                result = diary_service.update_diary(
-                    target=target,
-                    replace=replace_content,
-                    character_id=character_id
-                )
+                # Use DailyNote plugin via plugin_manager
+                result = await plugin_manager.process_tool_call("DailyNote", {
+                    "command": "update",
+                    "maid": character_id,
+                    "target": target,
+                    "replace": replace_content
+                })
 
-                if result["status"] == "success":
-                    logger.info(f"Diary updated successfully: {result['path']}")
+                if result.get("status") == "success":
+                    logger.info(f"Diary updated successfully: {result.get('path')}")
                 else:
-                    logger.warning(f"Diary update failed: {result['message']}")
+                    logger.warning(f"Diary update failed: {result.get('error')}")
             else:
                 logger.warning(f"Invalid UPDATE format: {evaluation}")
             return
@@ -194,19 +194,20 @@ Tag: 关键词1, 关键词2, 关键词3
             {"role": "user", "content": diary_prompt}
         ])
 
-        # Step 4: Create new diary
+        # Step 4: Create new diary using DailyNote plugin
         today = datetime.now().strftime("%Y-%m-%d")
 
-        result = diary_service.create_diary(
-            character_id=character_id,
-            date=today,
-            content=diary_content
-        )
+        result = await plugin_manager.process_tool_call("DailyNote", {
+            "command": "create",
+            "maid": character_id,
+            "Date": today,
+            "Content": diary_content
+        })
 
-        if result["status"] == "success":
-            logger.info(f"Diary created successfully: {result['data']['path']}")
+        if result.get("status") == "success":
+            logger.info(f"Diary created successfully: {result.get('path')}")
         else:
-            logger.error(f"Failed to create diary: {result['message']}")
+            logger.error(f"Failed to create diary: {result.get('error')}")
 
     except Exception as e:
         logger.error(f"Error extracting/saving diary: {e}")
@@ -312,23 +313,6 @@ async def chat(
             content=response.message,
             name=character_name,  # Character name
             character_id=character_id
-        )
-
-        # Build current conversation ONLY (不包括历史，避免日记内容重复)
-        # 日记应该只记录本次对话的新增内容
-        conversation_messages = [
-            {"role": "user", "content": request.message},
-            {"role": "assistant", "content": response.message}
-        ]
-
-        # Trigger async diary extraction (AI will judge if worth recording)
-        asyncio.create_task(
-            extract_and_save_diary(
-                character_id=character_id,
-                user_id=user_id,
-                conversation_messages=conversation_messages,
-                llm=llm
-            )
         )
 
         # Update response with topic information
@@ -437,20 +421,6 @@ async def chat_stream(
                 content=response_text,
                 name=character_name,  # Character name
                 character_id=character_id
-            )
-
-            # Trigger diary generation after stream completes
-            conversation_messages = [
-                {"role": "user", "content": request.message},
-                {"role": "assistant", "content": response_text}
-            ]
-            asyncio.create_task(
-                extract_and_save_diary(
-                    character_id=character_id,
-                    user_id=user_id,
-                    conversation_messages=conversation_messages,
-                    llm=llm
-                )
             )
         except Exception as e:
             yield f"data: [ERROR: {str(e)}]\n\n"

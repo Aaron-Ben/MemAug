@@ -43,9 +43,9 @@ class ToolExecutor:
         tool_name = tool_call.name
         args = tool_call.args
 
-        # Check if plugin exists
-        if tool_name not in self.plugin_manager.plugins:
-            logger.error(f"[ToolExecutor] Plugin '{tool_name}' not found. Available: {list(self.plugin_manager.plugins.keys())}")
+        # Check if plugin exists (check both direct plugins and aliases)
+        if tool_name not in self.plugin_manager.plugins and tool_name not in self.plugin_manager.tool_aliases:
+            logger.error(f"[ToolExecutor] Plugin '{tool_name}' not found. Available: {list(self.plugin_manager.plugins.keys())}, Aliases: {list(self.plugin_manager.tool_aliases.keys())}")
             return self._create_error_result(
                 tool_name,
                 f"未找到名为 \"{tool_name}\" 的插件"
@@ -97,8 +97,9 @@ class ToolExecutor:
                 result.get('error', '未知错误')
             )
 
-        # Get return content
-        raw_result = result.get('result')
+        # Get return content (try multiple possible fields)
+        # Priority: result > message > path > entire result dict
+        raw_result = result.get('result') or result.get('message') or result.get('path') or result
 
         # Check if rich content format
         if isinstance(raw_result, dict) and 'content' in raw_result:

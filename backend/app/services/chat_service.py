@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 from app.services.llm import LLM
 from app.services.character_storage_service import CharacterStorageService
-from app.services.diary import DiaryFileService
 from app.models.character import UserCharacterPreference
 from app.schemas.message import (
     ChatRequest,
@@ -58,7 +57,6 @@ class ChatService:
         """
         self.llm = llm
         self.character_service = character_service
-        self.diary_service = DiaryFileService()
 
         # Initialize tool system if plugin_manager provided
         self.plugin_manager = plugin_manager
@@ -196,6 +194,19 @@ class ChatService:
             # Log detected tool calls
             logger.info(f"[Tool Call] Executing {len(tool_calls)} tool(s): {[tc.name for tc in tool_calls]}")
 
+            # Replace placeholders in tool call arguments
+            from datetime import datetime
+            today = datetime.now().strftime("%Y-%m-%d")
+            character_id = request.character_id
+
+            for tc in tool_calls:
+                if tc.args:
+                    for key, value in tc.args.items():
+                        if isinstance(value, str):
+                            value = value.replace("{CHARACTER_ID}", character_id)
+                            value = value.replace("{TODAY}", today)
+                            tc.args[key] = value
+
             # Execute tools
             if self.tool_executor:
                 execution_results = await self.tool_executor.execute_all(tool_calls)
@@ -249,16 +260,6 @@ class ChatService:
             if tool_description:
                 system_prompt = f"{system_prompt}\n\n{tool_description}"
 
-        # Add diary context if available
-        if self.diary_service:
-            diary_context = await self._get_diary_context(
-                character_id=request.character_id,
-                user_id=user_id,
-                current_message=request.message
-            )
-            if diary_context:
-                system_prompt = self._add_diary_context_to_prompt(system_prompt, diary_context)
-
         # Build messages list
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -270,109 +271,6 @@ class ChatService:
         messages.append({"role": "user", "content": request.message})
 
         return messages
-
-    async def _get_diary_context(
-        self,
-        character_id: str,
-        user_id: str,
-        current_message: str
-    ) -> Optional[str]:
-        """
-        Get relevant diary entries for context.
-
-        Args:
-            character_id: Character ID (used as diary_name)
-            user_id: User ID
-            current_message: Current user message
-
-        Returns:
-            Formatted diary context or None
-        """
-        if not self.diary_service:
-            return None
-
-        try:
-            # Get recent diaries for this character
-            diaries = self.diary_service.list_diaries(
-                character_id=character_id,
-                limit=10
-            )
-
-            if not diaries:
-                return None
-
-            # Filter for relevant diaries based on message
-            relevant_diaries = self._filter_relevant_diaries(diaries, current_message)
-
-            if not relevant_diaries:
-                return None
-
-            return self._format_diary_context(relevant_diaries[:3])
-        except Exception as e:
-            print(f"Error getting diary context: {e}")
-            return None
-
-    def _filter_relevant_diaries(self, diaries: List[Dict], message: str) -> List[Dict]:
-        """
-        Filter diaries for relevance to current message.
-
-        Args:
-            diaries: List of diary entries
-            message: Current message
-
-        Returns:
-            List of relevant diaries
-        """
-        message_lower = message.lower()
-        relevant = []
-
-        for diary in diaries:
-            content = diary.get("content", "")
-
-            # Extract tags from content
-            tag_match = re.search(r'Tag:\s*(.+)$', content, re.MULTILINE | re.IGNORECASE)
-            if tag_match:
-                tag_string = tag_match.group(1)
-                tags = [tag.strip() for tag in re.split(r'[,，、]', tag_string) if tag.strip()]
-                for tag in tags:
-                    if tag.lower() in message_lower:
-                        relevant.append(diary)
-                        break
-
-            # Check content keywords
-            keywords = ["哥哥", "今天", "昨天", "开心", "难过"]
-            for keyword in keywords:
-                if keyword in content and keyword in message_lower:
-                    relevant.append(diary)
-                    break
-
-        return relevant
-
-    def _format_diary_context(self, diaries: List[Dict]) -> str:
-        """
-        Format diary entries as context.
-
-        Args:
-            diaries: List of diary entries
-
-        Returns:
-            Formatted context string
-        """
-        context_parts = ["## 之前的回忆\n\n"]
-
-        for diary in diaries:
-            # Extract date from filename (format: YYYY-MM-DD_HHMMSS.txt)
-            path = diary.get("path", "")
-            filename = path.split("/")[-1] if "/" in path else path
-            date_part = filename.split("_")[0] if "_" in filename else "未知日期"
-
-            content = diary.get("content", "")
-            # Remove Tag line from context display
-            content_without_tag = re.sub(r'\n\nTag:.*$', '', content, flags=re.MULTILINE | re.IGNORECASE)
-
-            context_parts.append(f"**{date_part}的日记**\n{content_without_tag}\n")
-
-        return "\n".join(context_parts)
 
     def _extract_response_without_tool_calls(self, response: str) -> str:
         """
@@ -402,7 +300,7 @@ class ChatService:
         for result in execution_results:
             tool_name = result.get('tool_name', 'Unknown')
             if result.get('success'):
-                content = result.get('content', '')
+                content = str(result.get('content', ''))
                 # Truncate long content
                 if len(content) > 1000:
                     content = content[:1000] + "..."
@@ -416,4 +314,10 @@ class ChatService:
                 summary_parts.append(f"- 错误信息: {error_msg}")
 
         summary_parts.append("VCP调用结果结束]]")
-        return "\n".join(summary_parts)
+
+        result = "\n".join(summary_parts)
+
+        # 添加提示，引导 AI 生成自然的响应
+        return f"""{result}
+
+请根据以上工具调用结果，继续与用户对话。如果工具执行成功，请用自然的方式告知用户操作已完成，并继续对话。不要重复工具调用的技术细节。"""

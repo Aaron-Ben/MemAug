@@ -1,15 +1,13 @@
 """Diary-related services for emotional companionship system.
 
 File-based diary system:
-- Diaries stored as text files in organized folders
+- Diaries stored as text files in data/characters/{character_id}/daily/
 - Database tracks file metadata (path, checksum, mtime, size)
-- Similar to VCPToolBox DailyNote plugin functionality
+- Creating and updating diaries is handled by the DailyNote plugin
 """
 
-from app.services.diary.file_service import DiaryFileService, get_diary_root, sanitize_path_component
+from app.services.diary.file_service import DiaryFileService
 
 __all__ = [
     "DiaryFileService",
-    "get_diary_root",
-    "sanitize_path_component",
 ]
