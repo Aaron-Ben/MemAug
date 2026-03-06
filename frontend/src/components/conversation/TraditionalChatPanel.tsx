@@ -4,6 +4,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { AudioRecorder, recognizeFromBlob } from '../../services/voiceService';
 import type { DisplayMessage, RecordingState } from '../../types/chat';
 import clsx from 'clsx';
+import { AIMessageBubble, AILoadingBubble, UserMessageBubble } from '../chat';
 
 interface TraditionalChatPanelProps {
   messages: DisplayMessage[];
@@ -131,23 +132,6 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const formatMessageTime = (date: Date) => {
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const minutes = Math.floor(diff / 60000);
-
-    if (minutes < 1) return '刚刚';
-    if (minutes < 60) return `${minutes}分钟前`;
-
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}小时前`;
-
-    const days = Math.floor(hours / 24);
-    if (days < 7) return `${days}天前`;
-
-    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
-  };
-
   return (
     <div className="flex flex-col h-full bg-transparent">
       {/* Messages Area */}
@@ -171,62 +155,25 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
                 message.isUser ? 'justify-end' : 'justify-start'
               )}
             >
-              <div className={clsx(
-                'flex flex-col max-w-[85%] md:max-w-[70%]',
-                message.isUser ? 'items-end' : 'items-start'
-              )}>
-                {/* User message bubble - refined gradient effect */}
-                {message.isUser ? (
-                  <div className="bg-gradient-to-br from-rose-400 to-rose-500 text-white rounded-2xl rounded-br-sm px-5 py-3 shadow-sm">
-                    <div className="text-base leading-relaxed break-words">
-                      {message.content}
-                    </div>
-                  </div>
-                ) : (
-                  /* AI message bubble - clean card design */
-                  <div className="bg-white dark:bg-neutral-800 text-neutral-800 dark:text-neutral-100 rounded-2xl rounded-bl-sm px-5 py-3 shadow-sm border border-neutral-100 dark:border-neutral-700">
-                    <div className="text-base leading-relaxed break-words">
-                      {message.content}
-                    </div>
-                  </div>
-                )}
-                <div className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1 px-1">
-                  {formatMessageTime(message.timestamp)}
-                </div>
-              </div>
+              {message.isUser ? (
+                <UserMessageBubble content={message.content} timestamp={message.timestamp} />
+              ) : (
+                <AIMessageBubble content={message.content} timestamp={message.timestamp} />
+              )}
             </div>
           ))}
 
           {/* Streaming message */}
           {streamingMessage && (
             <div className="flex justify-start animate-message-in">
-              <div className="flex flex-col max-w-[85%] md:max-w-[70%] items-start">
-                <div className="bg-white dark:bg-neutral-800 text-neutral-800 dark:text-neutral-100 rounded-2xl rounded-bl-sm px-5 py-3 shadow-sm border border-neutral-100 dark:border-neutral-700">
-                  <div className="text-base leading-relaxed break-words">
-                    {streamingMessage}
-                  </div>
-                  <div className="flex gap-1 mt-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 dark:bg-rose-500 animate-pulse-subtle"></span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 dark:bg-rose-500 animate-pulse-subtle delay-150"></span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 dark:bg-rose-500 animate-pulse-subtle delay-225"></span>
-                  </div>
-                </div>
-              </div>
+              <AIMessageBubble content={streamingMessage} isStreaming={true} />
             </div>
           )}
 
           {/* Loading indicator */}
           {loading && !streamingMessage && (
             <div className="flex justify-start animate-message-in">
-              <div className="flex flex-col max-w-[85%] md:max-w-[70%] items-start">
-                <div className="bg-white dark:bg-neutral-800 rounded-2xl rounded-bl-sm px-5 py-3 shadow-sm border border-neutral-100 dark:border-neutral-700 min-w-[60px]">
-                  <div className="flex gap-1.5 items-center">
-                    <span className="w-2 h-2 rounded-full bg-rose-400 dark:bg-rose-500 animate-typing"></span>
-                    <span className="w-2 h-2 rounded-full bg-rose-400 dark:bg-rose-500 animate-typing delay-150"></span>
-                    <span className="w-2 h-2 rounded-full bg-rose-400 dark:bg-rose-500 animate-typing delay-225"></span>
-                  </div>
-                </div>
-              </div>
+              <AILoadingBubble />
             </div>
           )}
 
