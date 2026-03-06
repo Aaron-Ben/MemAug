@@ -15,7 +15,7 @@ env_paths = [
 load_dotenv(env_paths[0], override=True)  # Load from project root
 
 from app.api.v1 import character, chat, diary, chat_history
-from app.services.character_service import CharacterService
+from app.services.character_storage_service import CharacterStorageService
 from app.models.database import init_db
 from app.utils.file_logger import DailyFileHandler, LOGS_DIR
 
@@ -104,7 +104,7 @@ app.add_middleware(
 )
 
 # Initialize character service
-character_service = CharacterService()
+character_service = CharacterStorageService()
 
 # Store services in app state for dependency injection
 app.state.character_service = character_service

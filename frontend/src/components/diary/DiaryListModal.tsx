@@ -8,7 +8,8 @@ import { DiaryTimeline } from './DiaryTimeline';
 interface DiaryListModalProps {
   isOpen: boolean;
   onClose: () => void;
-  diaryName?: string;
+  characterId: string;
+  characterName?: string;
   onSelectDiary?: (diary: DiaryEntry) => void;
   onEditDiary?: (diary: DiaryEntry) => void;
 }
@@ -16,7 +17,8 @@ interface DiaryListModalProps {
 export const DiaryListModal: React.FC<DiaryListModalProps> = ({
   isOpen,
   onClose,
-  diaryName = 'sister_001',
+  characterId,
+  characterName,
   onSelectDiary,
   onEditDiary
 }) => {
@@ -30,14 +32,14 @@ export const DiaryListModal: React.FC<DiaryListModalProps> = ({
     if (isOpen) {
       loadDiaries();
     }
-  }, [isOpen, diaryName]);
+  }, [isOpen, characterId]);
 
   const loadDiaries = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const data = await listDiaries(diaryName);
+      const data = await listDiaries(characterId);
       setDiaries(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load diaries');
@@ -88,9 +90,9 @@ export const DiaryListModal: React.FC<DiaryListModalProps> = ({
               <div>
                 <h2 className="text-2xl font-bold text-neutral-800 dark:text-neutral-100 flex items-center gap-2">
                   <span>📔</span>
-                  妹妹的日记本
+                  {characterName || '日记本'}
                 </h2>
-                <p className="text-sm text-neutral-600 dark:text-neutral-400 mt-1">记录与哥哥的点点滴滴～</p>
+                <p className="text-sm text-neutral-600 dark:text-neutral-400 mt-1">记录对话的点点滴滴～</p>
               </div>
               <button
                 onClick={onClose}
@@ -118,7 +120,7 @@ export const DiaryListModal: React.FC<DiaryListModalProps> = ({
             ) : diaries.length === 0 ? (
               <div className="text-center text-neutral-400 dark:text-neutral-500 py-12">
                 <p className="text-lg mb-2">还没有日记呢～</p>
-                <p className="text-sm">妹妹会记录和哥哥的重要时刻</p>
+                <p className="text-sm">会记录对话中的重要时刻</p>
               </div>
             ) : (
               <DiaryTimeline

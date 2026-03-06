@@ -1,7 +1,7 @@
 """File-based diary service for emotional companionship system.
 
-Similar to VCPToolBox DailyNote plugin functionality:
-- Diaries are stored as text files in organized folders
+Diaries are now stored in data/characters/{character_id}/daily/
+- Each character has their own diary folder
 - Database tracks file metadata (path, checksum, mtime, size)
 - Supports creating, updating, and listing diary files
 """
@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -19,15 +20,26 @@ from app.models.database import SessionLocal, DiaryFileTable
 logger = logging.getLogger(__name__)
 
 
-# 默认日记根目录
+# 默认角色目录
+DEFAULT_CHARACTERS_DIR = Path(__file__).parent.parent.parent.parent.parent / "data" / "characters"
+
+# 旧的日记根目录 (保持兼容性)
 DEFAULT_DIARY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "data" / "diary"
 
 # 忽略的文件夹列表
 IGNORED_FOLDERS = ['MusicDiary']
 
 
+def get_characters_dir() -> Path:
+    """获取角色目录"""
+    path_str = os.getenv("CHARACTERS_DIR")
+    if path_str:
+        return Path(path_str)
+    return DEFAULT_CHARACTERS_DIR
+
+
 def get_diary_root() -> Path:
-    """获取日记根目录"""
+    """获取旧的日记根目录 (已弃用)"""
     path_str = os.getenv("DIARY_ROOT_PATH")
     if path_str:
         return Path(path_str)
@@ -60,18 +72,43 @@ def calculate_file_checksum(file_path: Path) -> str:
 
 
 class DiaryFileService:
-    """基于文件系统的日记服务"""
+    """基于文件系统的日记服务
+
+    日记保存在 data/characters/{character_id}/daily/ 目录下
+    """
 
     TAG_PATTERN = re.compile(r'^Tag:\s*(.+)$', re.MULTILINE | re.IGNORECASE)
 
-    def __init__(self, diary_root: Optional[Path] = None):
+    def __init__(self, characters_dir: Optional[Path] = None, character_id: Optional[str] = None):
         """初始化日记文件服务
 
         Args:
-            diary_root: 日记根目录，默认为 DEFAULT_DIARY_ROOT
+            characters_dir: 角色根目录，默认为 DEFAULT_CHARACTERS_DIR
+            character_id: 可选的角色ID，用于限定操作范围
         """
-        self.diary_root = diary_root or get_diary_root()
-        self.diary_root.mkdir(parents=True, exist_ok=True)
+        self.characters_dir = characters_dir or get_characters_dir()
+        self.characters_dir.mkdir(parents=True, exist_ok=True)
+        self.character_id = character_id
+
+    def _get_character_daily_dir(self, character_id: str) -> Path:
+        """获取指定角色的日记目录
+
+        Args:
+            character_id: 角色 ID
+
+        Returns:
+            日记目录路径 data/characters/{character_id}/daily/
+        """
+        # 验证 character_id 是有效的 UUID
+        try:
+            uuid.UUID(character_id)
+        except ValueError:
+            # 如果不是 UUID，可能是旧的 sister_001 格式，直接使用
+            pass
+
+        daily_dir = self.characters_dir / character_id / "daily"
+        daily_dir.mkdir(parents=True, exist_ok=True)
+        return daily_dir
 
     def _ensure_tag_line(self, content: str, tag: Optional[str] = None) -> str:
         """确保内容有 Tag 行"""
@@ -90,17 +127,17 @@ class DiaryFileService:
             "Tag is missing. Please provide a 'tag' parameter or add a 'Tag:' line at the end."
         )
 
-    def get_file_path(self, diary_name: str, date: str) -> Path:
+    def get_file_path(self, character_id: str, date: str) -> Path:
         """获取日记文件路径
 
         Args:
-            diary_name: 日记本名称（文件夹名）
+            character_id: 角色 ID
             date: 日期 YYYY-MM-DD
 
         Returns:
-            文件路径
+            文件路径 data/characters/{character_id}/daily/{date}-{time}.txt
         """
-        sanitized_name = sanitize_path_component(diary_name)
+        daily_dir = self._get_character_daily_dir(character_id)
         date_part = date.replace(".", "-").replace("/", "-").replace("\\", "-").strip()
 
         # 获取当前时间戳用于唯一文件名
@@ -108,11 +145,11 @@ class DiaryFileService:
         time_str = now.strftime("%H_%M_%S")
         filename = f"{date_part}-{time_str}.txt"
 
-        return self.diary_root / sanitized_name / filename
+        return daily_dir / filename
 
     def create_diary(
         self,
-        diary_name: str,
+        character_id: str,
         date: str,
         content: str,
         tag: Optional[str] = None
@@ -120,7 +157,7 @@ class DiaryFileService:
         """创建日记文件
 
         Args:
-            diary_name: 日记本名称
+            character_id: 角色 ID
             date: 日期 YYYY-MM-DD
             content: 日记内容
             tag: 可选标签
@@ -128,19 +165,11 @@ class DiaryFileService:
         Returns:
             包含文件元数据的字典
         """
-        # 检查是否是忽略的文件夹
-        sanitized_name = sanitize_path_component(diary_name)
-        if sanitized_name in IGNORED_FOLDERS:
-            return {
-                "status": "error",
-                "message": f"Cannot create diary in ignored folder: {sanitized_name}"
-            }
-
         # 确保 Tag 行存在
         content_with_tag = self._ensure_tag_line(content, tag)
 
         # 获取文件路径
-        file_path = self.get_file_path(diary_name, date)
+        file_path = self.get_file_path(character_id, date)
 
         # 如果文件已存在，添加计数器后缀
         counter = 1
@@ -151,9 +180,6 @@ class DiaryFileService:
             file_path = original_path.parent / f"{stem}({counter}){extension}"
             counter += 1
 
-        # 创建目录
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
         # 写入文件
         file_path.write_text(content_with_tag, encoding='utf-8')
 
@@ -163,15 +189,15 @@ class DiaryFileService:
         size = stat.st_size
         checksum = calculate_file_checksum(file_path)
 
+        # 计算相对路径 (从 characters 目录开始)
+        relative_path = file_path.relative_to(self.characters_dir).as_posix()
+
         # 保存到数据库
         db = SessionLocal()
         try:
-            # 计算相对路径
-            relative_path = file_path.relative_to(self.diary_root).as_posix()
-
             file_record = DiaryFileTable(
                 path=relative_path,
-                diary_name=sanitized_name,
+                diary_name=character_id,
                 checksum=checksum,
                 mtime=mtime,
                 size=size,
@@ -189,7 +215,7 @@ class DiaryFileService:
                 "data": {
                     "id": file_record.id,
                     "path": relative_path,
-                    "diary_name": sanitized_name,
+                    "character_id": character_id,
                     "content": content_with_tag,
                     "mtime": mtime,
                     "size": size
@@ -207,7 +233,7 @@ class DiaryFileService:
         Returns:
             包含文件内容和元数据的字典，如果文件不存在返回 None
         """
-        file_path = self.diary_root / path
+        file_path = self.characters_dir / path
 
         if not file_path.exists():
             return None
@@ -216,12 +242,13 @@ class DiaryFileService:
         stat = file_path.stat()
         mtime = int(stat.st_mtime)
 
-        # 从路径中提取 diary_name
-        diary_name = path.split('/')[0]
+        # 从路径中提取 character_id (第一个路径组件)
+        path_parts = path.split('/')
+        character_id = path_parts[0] if path_parts else ""
 
         return {
             "path": path,
-            "diary_name": diary_name,
+            "character_id": character_id,
             "content": content,
             "mtime": mtime
         }
@@ -230,14 +257,14 @@ class DiaryFileService:
         self,
         target: str,
         replace: str,
-        diary_name: Optional[str] = None
+        character_id: Optional[str] = None
     ) -> Dict[str, any]:
         """更新日记文件（查找并替换内容）
 
         Args:
             target: 要查找的旧内容（至少15字符）
             replace: 替换的新内容
-            diary_name: 可选的日记本名称，用于限定搜索范围
+            character_id: 可选的角色ID，用于限定搜索范围
 
         Returns:
             操作结果
@@ -252,15 +279,14 @@ class DiaryFileService:
         try:
             # 构建查询
             query = db.query(DiaryFileTable)
-            if diary_name:
-                sanitized_name = sanitize_path_component(diary_name)
-                query = query.filter(DiaryFileTable.diary_name == sanitized_name)
+            if character_id:
+                query = query.filter(DiaryFileTable.diary_name == character_id)
 
             # 按 mtime 降序排列（最新的在前）
             files = query.order_by(DiaryFileTable.mtime.desc()).all()
 
             for file_record in files:
-                file_path = self.diary_root / file_record.path
+                file_path = self.characters_dir / file_record.path
                 if not file_path.exists():
                     continue
 
@@ -287,7 +313,7 @@ class DiaryFileService:
                         "path": file_record.path
                     }
 
-            char_msg = f" for diary '{diary_name}'" if diary_name else ""
+            char_msg = f" for character '{character_id}'" if character_id else ""
             return {
                 "status": "error",
                 "message": f"Target content not found in any diary{char_msg}."
@@ -295,11 +321,11 @@ class DiaryFileService:
         finally:
             db.close()
 
-    def list_diaries(self, diary_name: Optional[str] = None, limit: int = 10) -> List[Dict[str, any]]:
-        """列出日记文件
+    def list_diaries(self, character_id: str, limit: int = 10) -> List[Dict[str, any]]:
+        """列出指定角色的日记文件
 
         Args:
-            diary_name: 可选的日记本名称
+            character_id: 角色 ID
             limit: 返回数量限制
 
         Returns:
@@ -307,21 +333,20 @@ class DiaryFileService:
         """
         db = SessionLocal()
         try:
-            query = db.query(DiaryFileTable)
-            if diary_name:
-                sanitized_name = sanitize_path_component(diary_name)
-                query = query.filter(DiaryFileTable.diary_name == sanitized_name)
-
-            files = query.order_by(DiaryFileTable.mtime.desc()).limit(limit).all()
+            files = (db.query(DiaryFileTable)
+                    .filter(DiaryFileTable.diary_name == character_id)
+                    .order_by(DiaryFileTable.mtime.desc())
+                    .limit(limit)
+                    .all())
 
             result = []
             for file_record in files:
-                file_path = self.diary_root / file_record.path
+                file_path = self.characters_dir / file_record.path
                 if file_path.exists():
                     content = file_path.read_text(encoding='utf-8')
                     result.append({
                         "path": file_record.path,
-                        "diary_name": file_record.diary_name,
+                        "character_id": character_id,
                         "content": content,
                         "mtime": file_record.mtime
                     })
@@ -330,11 +355,11 @@ class DiaryFileService:
         finally:
             db.close()
 
-    def list_diary_names(self) -> List[str]:
-        """列出所有日记本名称（文件夹名）
+    def list_all_diary_names(self) -> List[str]:
+        """列出所有有日记的角色ID列表
 
         Returns:
-            日记本名称列表
+            角色 ID 列表
         """
         db = SessionLocal()
         try:
@@ -352,7 +377,7 @@ class DiaryFileService:
         Returns:
             是否删除成功
         """
-        file_path = self.diary_root / path
+        file_path = self.characters_dir / path
 
         db = SessionLocal()
         try:
@@ -370,10 +395,13 @@ class DiaryFileService:
         finally:
             db.close()
 
-    def sync_files(self) -> Dict[str, any]:
-        """同步文件系统到数据库
+    def sync_character_diaries(self, character_id: str) -> Dict[str, any]:
+        """同步指定角色的日记文件到数据库
 
-        扫描日记目录，添加新文件到数据库，删除不存在的文件记录
+        扫描角色的日记目录，添加新文件到数据库，删除不存在的文件记录
+
+        Args:
+            character_id: 角色 ID
 
         Returns:
             同步结果统计
@@ -382,22 +410,22 @@ class DiaryFileService:
         removed_count = 0
         updated_count = 0
 
+        daily_dir = self._get_character_daily_dir(character_id)
+
         db = SessionLocal()
         try:
-            # 获取数据库中的所有文件
-            existing_files = {f.path: f for f in db.query(DiaryFileTable).all()}
+            # 获取该角色的所有文件
+            existing_files = {
+                f.path: f
+                for f in db.query(DiaryFileTable)
+                       .filter(DiaryFileTable.diary_name == character_id)
+                       .all()
+            }
 
             # 扫描文件系统
-            for diary_dir in self.diary_root.iterdir():
-                if not diary_dir.is_dir():
-                    continue
-
-                dir_name = diary_dir.name
-                if dir_name in IGNORED_FOLDERS:
-                    continue
-
-                for file_path in diary_dir.glob("*.txt"):
-                    relative_path = file_path.relative_to(self.diary_root).as_posix()
+            if daily_dir.exists():
+                for file_path in daily_dir.glob("*.txt"):
+                    relative_path = file_path.relative_to(self.characters_dir).as_posix()
                     stat = file_path.stat()
                     mtime = int(stat.st_mtime)
                     size = stat.st_size
@@ -419,7 +447,7 @@ class DiaryFileService:
                         # 添加新记录
                         new_record = DiaryFileTable(
                             path=relative_path,
-                            diary_name=dir_name,
+                            diary_name=character_id,
                             checksum=checksum,
                             mtime=mtime,
                             size=size,
@@ -435,9 +463,10 @@ class DiaryFileService:
 
             db.commit()
 
-            logger.info(f"File sync completed: added={added_count}, updated={updated_count}, removed={removed_count}")
+            logger.info(f"Character {character_id} diary sync completed: added={added_count}, updated={updated_count}, removed={removed_count}")
 
             return {
+                "character_id": character_id,
                 "added": added_count,
                 "updated": updated_count,
                 "removed": removed_count

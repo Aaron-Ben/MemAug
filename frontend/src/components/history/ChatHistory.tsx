@@ -47,7 +47,7 @@ export const ChatHistory: React.FC<ChatHistoryProps> = ({
                 >
                   <div className="flex justify-between items-start mb-1">
                     <span className="text-xs font-semibold text-gray-600">
-                      {message.isUser ? '你' : '妹妹'}
+                      {message.name || (message.isUser ? '你' : '妹妹')}
                     </span>
                     <span className="text-xs text-gray-400">
                       {formatDate(message.timestamp)}

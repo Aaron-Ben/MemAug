@@ -22,12 +22,12 @@ export const API_ENDPOINTS = {
   ttsAudio: (filename: string) => `${API_BASE_URL}/api/v1/chat/tts/audio/${filename}`,
 
   // Topic endpoints
-  topicList: (characterUuid?: string) =>
-    `${API_BASE_URL}/api/v1/chat/topics${characterUuid ? `?character_uuid=${characterUuid}` : ''}`,
+  topicList: (characterId?: string) =>
+    `${API_BASE_URL}/api/v1/chat/topics${characterId ? `?character_id=${characterId}` : ''}`,
   topicCreate: () => `${API_BASE_URL}/api/v1/chat/topics`,
   topicDelete: (id: number) => `${API_BASE_URL}/api/v1/chat/topics/${id}`,
-  topicHistory: (id: number, characterUuid?: string) =>
-    `${API_BASE_URL}/api/v1/chat/topics/${id}/history${characterUuid ? `?character_uuid=${characterUuid}` : ''}`,
+  topicHistory: (id: number, characterId?: string) =>
+    `${API_BASE_URL}/api/v1/chat/topics/${id}/history${characterId ? `?character_id=${characterId}` : ''}`,
 } as const;
 
 export async function apiRequest<T>(

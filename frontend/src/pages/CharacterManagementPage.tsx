@@ -42,6 +42,9 @@ export const CharacterManagementPage: React.FC = () => {
   const handleCreateSuccess = (character: UserCharacter) => {
     setCharacters((prev) => [...prev, character]);
     setShowCreateModal(false);
+    // Auto-select the new character and navigate to chat
+    localStorage.setItem('selectedCharacterId', character.character_id);
+    navigate('/');
   };
 
   const handleDelete = async (characterId: string) => {

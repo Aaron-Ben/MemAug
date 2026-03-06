@@ -20,8 +20,11 @@ export const CharacterSelector: React.FC<CharacterSelectorProps> = ({
   const [isOpen, setIsOpen] = useState(false);
 
   useEffect(() => {
-    loadCharacters();
-  }, []);
+    // Load characters when opening the dropdown
+    if (isOpen) {
+      loadCharacters();
+    }
+  }, [isOpen]);
 
   const loadCharacters = async () => {
     try {
@@ -69,7 +72,7 @@ export const CharacterSelector: React.FC<CharacterSelectorProps> = ({
             className="fixed inset-0 z-10"
             onClick={() => setIsOpen(false)}
           />
-          <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-xl border border-pink-200 z-20">
+          <div className="absolute left-0 mt-2 w-64 bg-white rounded-lg shadow-xl border border-pink-200 z-20">
             <div className="p-2 max-h-96 overflow-y-auto">
               {characters.length === 0 ? (
                 <div className="p-4 text-center text-gray-500 text-sm">

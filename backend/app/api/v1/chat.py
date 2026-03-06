@@ -9,7 +9,7 @@ import logging
 import os
 
 from app.services.llm import LLM
-from app.services.character_service import CharacterService
+from app.services.character_storage_service import CharacterStorageService
 from app.services.chat_service import ChatService
 from app.services.chat_history_service import ChatHistoryService
 from app.models.character import UserCharacterPreference
@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 from app.api.v1.character import _user_preferences_store
 
 
-def get_character_service() -> CharacterService:
-    """Dependency injection for CharacterService."""
-    return CharacterService()
+def get_character_service() -> CharacterStorageService:
+    """Dependency injection for CharacterStorageService."""
+    return CharacterStorageService()
 
 
 # Load environment variables once at module load
@@ -151,7 +151,7 @@ async def extract_and_save_diary(
                 result = diary_service.update_diary(
                     target=target,
                     replace=replace_content,
-                    diary_name=character_id
+                    character_id=character_id
                 )
 
                 if result["status"] == "success":
@@ -198,7 +198,7 @@ Tag: 关键词1, 关键词2, 关键词3
         today = datetime.now().strftime("%Y-%m-%d")
 
         result = diary_service.create_diary(
-            diary_name=character_id,
+            character_id=character_id,
             date=today,
             content=diary_content
         )
@@ -216,7 +216,7 @@ Tag: 关键词1, 关键词2, 关键词3
 async def chat(
     request: ChatRequest,
     user_id: str = Depends(get_mock_user_id),
-    character_service: CharacterService = Depends(get_character_service),
+    character_service: CharacterStorageService = Depends(get_character_service),
     llm: LLM = Depends(get_llm_service),
     history_service: ChatHistoryService = Depends(get_chat_history_service)
 ):
@@ -228,8 +228,7 @@ async def chat(
 
     Request Body:
     - message: User's message to the character
-    - character_id: Character to chat with (default: "sister_001")
-    - character_uuid: Character UUID (alternative to character_id)
+    - character_id: Character to chat with (UUID)
     - topic_id: Topic ID for continuing a conversation (optional)
     - conversation_history: Optional previous messages for context (deprecated, use topic_id)
     - stream: Whether to stream the response (default: false)
@@ -241,34 +240,31 @@ async def chat(
     ```json
     {
         "message": "我回来了",
-        "character_id": "sister_001",
+        "character_id": "550e8400-e29b-41d4-a716-446655440000",
         "stream": false
     }
     ```
     """
-    # Resolve character UUID
-    character_uuid = request.character_uuid
-    if character_uuid is None:
-        character_uuid = history_service.mapping_service.get_or_create_mapping(request.character_id)
-
     # Resolve topic_id (get or create default if not provided)
+    character_id = request.character_id
     topic_id = request.topic_id
     if topic_id is None:
-        topic_id = history_service.get_or_create_default_topic(user_id, character_uuid)
+        topic_id = history_service.get_or_create_default_topic(user_id, character_id)
 
-    # Verify character exists
-    character = character_service.get_character(request.character_id)
+    # Verify character exists and get character name
+    character = character_service.get_character(character_id)
     if not character:
         raise HTTPException(
             status_code=404,
-            detail=f"Character not found: {request.character_id}"
+            detail=f"Character not found: {character_id}"
         )
+    character_name = character.name if character else character_id
 
     # Get user preferences if available
-    user_preferences = get_user_preferences(request.character_id, user_id)
+    user_preferences = get_user_preferences(character_id, user_id)
 
     # Load conversation history from topic
-    history_messages = history_service.get_history_for_chat(user_id, topic_id, character_uuid)
+    history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
 
     # Create chat service with plugin manager
     chat_service = ChatService(
@@ -286,7 +282,7 @@ async def chat(
         # Create modified request with history
         request_with_history = ChatRequest(
             message=request.message,
-            character_id=request.character_id,
+            character_id=character_id,
             conversation_history=history_messages if history_messages else None,
             stream=request.stream
         )
@@ -298,22 +294,24 @@ async def chat(
             user_id=user_id
         )
 
-        # Save user message to history
+        # Save user message to history (name is user_id)
         history_service.append_message(
             user_id=user_id,
             topic_id=topic_id,
             role="user",
             content=request.message,
-            character_uuid=character_uuid
+            name=user_id,  # User ID as name
+            character_id=character_id
         )
 
-        # Save assistant response to history
+        # Save assistant response to history (name is character name)
         history_service.append_message(
             user_id=user_id,
             topic_id=topic_id,
             role="assistant",
             content=response.message,
-            character_uuid=character_uuid
+            name=character_name,  # Character name
+            character_id=character_id
         )
 
         # Build current conversation ONLY (不包括历史，避免日记内容重复)
@@ -326,7 +324,7 @@ async def chat(
         # Trigger async diary extraction (AI will judge if worth recording)
         asyncio.create_task(
             extract_and_save_diary(
-                character_id=request.character_id,
+                character_id=character_id,
                 user_id=user_id,
                 conversation_messages=conversation_messages,
                 llm=llm
@@ -334,7 +332,6 @@ async def chat(
         )
 
         # Update response with topic information
-        response.character_uuid = character_uuid
         response.topic_id = topic_id
 
         return response
@@ -346,7 +343,7 @@ async def chat(
 async def chat_stream(
     request: ChatRequest,
     user_id: str = Depends(get_mock_user_id),
-    character_service: CharacterService = Depends(get_character_service),
+    character_service: CharacterStorageService = Depends(get_character_service),
     llm: LLM = Depends(get_llm_service),
     history_service: ChatHistoryService = Depends(get_chat_history_service)
 ):
@@ -363,34 +360,31 @@ async def chat_stream(
     ```json
     {
         "message": "我回来了",
-        "character_id": "sister_001",
+        "character_id": "550e8400-e29b-41d4-a716-446655440000",
         "stream": true
     }
     ```
     """
-    # Resolve character UUID
-    character_uuid = request.character_uuid
-    if character_uuid is None:
-        character_uuid = history_service.mapping_service.get_or_create_mapping(request.character_id)
-
     # Resolve topic_id (get or create default if not provided)
+    character_id = request.character_id
     topic_id = request.topic_id
     if topic_id is None:
-        topic_id = history_service.get_or_create_default_topic(user_id, character_uuid)
+        topic_id = history_service.get_or_create_default_topic(user_id, character_id)
 
-    # Verify character exists
-    character = character_service.get_character(request.character_id)
+    # Verify character exists and get character name
+    character = character_service.get_character(character_id)
     if not character:
         raise HTTPException(
             status_code=404,
-            detail=f"Character not found: {request.character_id}"
+            detail=f"Character not found: {character_id}"
         )
+    character_name = character.name if character else character_id
 
     # Get user preferences if available
-    user_preferences = get_user_preferences(request.character_id, user_id)
+    user_preferences = get_user_preferences(character_id, user_id)
 
     # Load conversation history from topic
-    history_messages = history_service.get_history_for_chat(user_id, topic_id, character_uuid)
+    history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
 
     # Create chat service with plugin manager
     chat_service = ChatService(
@@ -412,7 +406,7 @@ async def chat_stream(
             # Create request with history for building messages
             request_with_history = ChatRequest(
                 message=request.message,
-                character_id=request.character_id,
+                character_id=character_id,
                 conversation_history=history_messages if history_messages else None,
                 stream=request.stream
             )
@@ -424,23 +418,25 @@ async def chat_stream(
 
             yield "data: [DONE]\n\n"
 
-            # Save user message to history
+            # Save user message to history (name is user_id)
             history_service.append_message(
                 user_id=user_id,
                 topic_id=topic_id,
                 role="user",
                 content=request.message,
-                character_uuid=character_uuid
+                name=user_id,  # User ID as name
+                character_id=character_id
             )
 
-            # Save assistant response to history
+            # Save assistant response to history (name is character name)
             response_text = "".join(full_response)
             history_service.append_message(
                 user_id=user_id,
                 topic_id=topic_id,
                 role="assistant",
                 content=response_text,
-                character_uuid=character_uuid
+                name=character_name,  # Character name
+                character_id=character_id
             )
 
             # Trigger diary generation after stream completes
@@ -450,7 +446,7 @@ async def chat_stream(
             ]
             asyncio.create_task(
                 extract_and_save_diary(
-                    character_id=request.character_id,
+                    character_id=character_id,
                     user_id=user_id,
                     conversation_messages=conversation_messages,
                     llm=llm

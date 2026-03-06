@@ -3,7 +3,8 @@
 Characters are stored as:
 - data/characters/{uuid}/prompt.md - Character system prompt
 - data/characters/{uuid}/daily/ - Diary files
-- data/characters/{uuid}/chat/ - Chat history
+
+Chat history is managed by ChatHistoryService in data/history/.
 
 The character_id IS the UUID - no separate mapping needed.
 """
@@ -53,7 +54,6 @@ class CharacterStorageService:
 
         # Create subdirectories
         (character_dir / "daily").mkdir(exist_ok=True)
-        (character_dir / "chat" / "topics").mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Created character: {character_id}")
 
@@ -230,9 +230,3 @@ class CharacterStorageService:
             return None
         return character_dir / "daily"
 
-    def get_chat_dir(self, character_id: str) -> Optional[Path]:
-        """Get the chat directory for a character."""
-        character_dir = self.get_character_dir(character_id)
-        if not character_dir:
-            return None
-        return character_dir / "chat"

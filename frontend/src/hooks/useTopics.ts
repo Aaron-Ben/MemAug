@@ -27,7 +27,7 @@ interface UseTopicsReturn {
   createNewTopic: () => Promise<number | null>;
   selectTopic: (topicId: number) => Promise<void>;
   deleteTopicById: (topicId: number) => Promise<void>;
-  refreshTopics: () => Promise<void>;
+  refreshTopics: () => Promise<TopicListItem[]>;
   loadTopicMessages: (topicId: number) => Promise<DisplayMessage[]>;
 }
 
@@ -47,7 +47,7 @@ export function useTopics({ characterId, onTopicChange }: UseTopicsOptions): Use
     }
   }, []);
 
-  // Load topics list - characterId IS the UUID
+  // Load topics list
   const refreshTopics = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -58,7 +58,7 @@ export function useTopics({ characterId, onTopicChange }: UseTopicsOptions): Use
       const topicListItems: TopicListItem[] = response.topics.map((topicResponse) => ({
         topic: {
           topic_id: topicResponse.topic_id,
-          character_uuid: topicResponse.character_uuid,
+          character_id: topicResponse.character_id,
           created_at: new Date(topicResponse.created_at),
           updated_at: new Date(topicResponse.updated_at),
           message_count: topicResponse.message_count,
@@ -67,10 +67,12 @@ export function useTopics({ characterId, onTopicChange }: UseTopicsOptions): Use
         timeAgo: formatTimeAgo(new Date(topicResponse.updated_at)),
       }));
       setTopics(topicListItems);
+      return topicListItems;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to load topics';
       setError(errorMessage);
       console.error('Failed to load topics:', err);
+      return [];
     } finally {
       setLoading(false);
     }
@@ -78,16 +80,40 @@ export function useTopics({ characterId, onTopicChange }: UseTopicsOptions): Use
 
   // Load topics when characterId changes
   useEffect(() => {
-    refreshTopics();
+    const loadAndSelectFirstTopic = async () => {
+      const topicList = await refreshTopics();
+      // Auto-select the first topic for the new character
+      // (if there's at least one topic and current topic doesn't belong to this character)
+      if (topicList.length > 0) {
+        const firstTopicId = topicList[0].topic.topic_id;
+        // Check if current topic belongs to this character
+        const currentTopicBelongsToThisChar = topicList.some(
+          t => t.topic.topic_id === currentTopicId
+        );
+        if (!currentTopicBelongsToThisChar) {
+          // Current topic doesn't belong to this character, switch to first topic
+          setCurrentTopicId(firstTopicId);
+          localStorage.setItem(TOPIC_STORAGE_KEY, String(firstTopicId));
+          onTopicChange?.(firstTopicId, []);
+        }
+      } else {
+        // No topics for this character, clear current topic
+        setCurrentTopicId(null);
+        localStorage.removeItem(TOPIC_STORAGE_KEY);
+        onTopicChange?.(null, []);
+      }
+    };
+    loadAndSelectFirstTopic();
   }, [characterId, refreshTopics]);
 
   // Convert API messages to DisplayMessage format
   const convertToDisplayMessages = useCallback((messages: ChatMessageResponse[]): DisplayMessage[] => {
     return messages.map((msg) => ({
-      id: msg.message_id,
+      id: msg.id,
       content: msg.content,
       isUser: msg.role === 'user',
-      timestamp: new Date(msg.timestamp),
+      timestamp: new Date(msg.timestamp),  // msg.timestamp is now in milliseconds
+      name: msg.name,
     }));
   }, []);
 
@@ -116,7 +142,6 @@ export function useTopics({ characterId, onTopicChange }: UseTopicsOptions): Use
     try {
       const newTopic = await createTopic({
         character_id: characterId,
-        character_uuid: characterId,
       });
 
       // Refresh the topics list

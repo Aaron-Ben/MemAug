@@ -68,7 +68,6 @@ export const ChatPage: React.FC = () => {
     clearHistory,
     autoPlayTTS,
     toggleAutoPlayTTS,
-    playTTS,
     setMessages: setChatMessages,
   } = useChat({
     characterId: selectedCharacterId,
@@ -184,6 +183,7 @@ export const ChatPage: React.FC = () => {
           onVoiceInputStart={handleVoiceInputStart}
           onVoiceInputEnd={handleVoiceInputEnd}
           placeholder="聊聊天吧～"
+          characterId={selectedCharacterId}
         />
 
         {/* TTS Toggle */}
@@ -209,6 +209,7 @@ export const ChatPage: React.FC = () => {
           index={0}
         />
         <DiaryListModal
+          characterId={selectedCharacterId}
           isOpen={showDiaries}
           onClose={() => setShowDiaries(false)}
           onSelectDiary={handleSelectDiary}

@@ -1,8 +1,11 @@
-/** Diary service for managing character diary entries */
+/** Diary service for managing character diary entries
+
+Diaries are stored in data/characters/{character_id}/daily/
+*/
 
 export interface DiaryEntry {
-  path: string;           // 文件相对路径，例如 "sister_001/2025-01-23_143052.txt"
-  diary_name: string;     // 日记本名称（文件夹名），例如 "sister_001"
+  path: string;           // 文件相对路径，例如 "{uuid}/daily/2025-01-23-14_30_52.txt"
+  character_id: string;   // 角色 ID
   content: string;        // 日记内容（包含末尾的 Tag 行）
   mtime: number;          // 文件修改时间戳
 }
@@ -24,11 +27,11 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 /**
  * 获取日记列表
- * @param diaryName - 日记本名称（文件夹名）
+ * @param characterId - 角色 ID
  * @param limit - 返回数量限制
  */
-export async function listDiaries(diaryName: string = 'sister_001', limit: number = 10): Promise<DiaryEntry[]> {
-  const response = await fetch(`${API_BASE}/api/v1/diary/list?diary_name=${diaryName}&limit=${limit}`);
+export async function listDiaries(characterId: string, limit: number = 10): Promise<DiaryEntry[]> {
+  const response = await fetch(`${API_BASE}/api/v1/diary/list?character_id=${characterId}&limit=${limit}`);
 
   if (!response.ok) {
     throw new Error(`Failed to list diaries: ${response.statusText}`);
@@ -39,10 +42,10 @@ export async function listDiaries(diaryName: string = 'sister_001', limit: numbe
 
 /**
  * 获取最新日记
- * @param diaryName - 日记本名称（文件夹名）
+ * @param characterId - 角色 ID
  */
-export async function getLatestDiary(diaryName: string = 'sister_001'): Promise<DiaryEntry | null> {
-  const response = await fetch(`${API_BASE}/api/v1/diary/latest?diary_name=${diaryName}`);
+export async function getLatestDiary(characterId: string): Promise<DiaryEntry | null> {
+  const response = await fetch(`${API_BASE}/api/v1/diary/latest?character_id=${characterId}`);
 
   if (!response.ok) {
     throw new Error(`Failed to get latest diary: ${response.statusText}`);
@@ -53,7 +56,7 @@ export async function getLatestDiary(diaryName: string = 'sister_001'): Promise<
 
 /**
  * 根据路径获取日记详情
- * @param path - 文件相对路径，例如 "sister_001/2025-01-23_143052.txt"
+ * @param path - 文件相对路径，例如 "{uuid}/daily/2025-01-23-14_30_52.txt"
  */
 export async function getDiaryByPath(path: string): Promise<DiaryEntry> {
   const response = await fetch(`${API_BASE}/api/v1/diary/${path}`);
@@ -69,7 +72,7 @@ export async function getDiaryByPath(path: string): Promise<DiaryEntry> {
  * 创建日记
  */
 export async function createDiary(data: {
-  diary_name: string;
+  character_id: string;
   date: string;
   content: string;
   tag?: string;
@@ -106,7 +109,7 @@ export async function updateDiary(
     body: JSON.stringify({
       target: currentDiary.content,
       replace: content,
-      diary_name: currentDiary.diary_name
+      character_id: currentDiary.character_id
     }),
   });
 
@@ -154,19 +157,17 @@ export async function listDiaryNames(): Promise<{ names: string[] }> {
 
 /**
  * 从文件路径提取日期
- * @param path - 文件路径，例如 "sister_001/2025-01-23_143052.txt" 或 "sister_001/2025-01-24-02_34_37.txt"
+ * @param path - 文件路径，例如 "{uuid}/daily/2025-01-23-14_30_52.txt"
  */
 export function extractDateFromPath(path: string): Date {
   const filename = path.split('/').pop() || '';
   // Remove .txt extension
   const nameWithoutExt = filename.replace('.txt', '');
 
-  // Try different formats:
-  // 1. "2025-01-24-02_34_37" -> extract "2025-01-24"
-  // 2. "2025-01-23_143052" -> extract "2025-01-23"
-  let datePart = nameWithoutExt.split('_')[0]; // "2025-01-24-02" or "2025-01-23"
+  // Format: "2025-01-23-14_30_37" -> extract "2025-01-23"
+  let datePart = nameWithoutExt.split('_')[0]; // "2025-01-23-14"
 
-  // If date part contains extra time segment (format 1), remove it
+  // If date part contains extra time segment, remove it
   if (datePart.split('-').length > 3) {
     const parts = datePart.split('-');
     datePart = `${parts[0]}-${parts[1]}-${parts[2]}`; // Keep only YYYY-MM-DD

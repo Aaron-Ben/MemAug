@@ -17,7 +17,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 from app.services.llm import LLM
-from app.services.character_service import CharacterService
+from app.services.character_storage_service import CharacterStorageService
 from app.services.diary import DiaryFileService
 from app.models.character import UserCharacterPreference
 from app.schemas.message import (
@@ -45,7 +45,7 @@ class ChatService:
     def __init__(
         self,
         llm: LLM,
-        character_service: CharacterService,
+        character_service: CharacterStorageService,
         plugin_manager=None
     ):
         """
@@ -90,13 +90,9 @@ class ChatService:
         if not character:
             return None
 
-        character_state = {
-            "proactivity_level": character.behavior.proactivity_level,
-            "argument_avoidance_threshold": character.behavior.argument_avoidance_threshold
-        }
-
-        # Determine if character should initiate a topic (random based on proactivity)
-        initiate_topic = random.random() < character.behavior.proactivity_level
+        # Default behavior parameters (simplified for file system storage)
+        character_state = {"proactivity_level": 0.5, "argument_avoidance_threshold": 0.7}
+        initiate_topic = random.random() < 0.5
 
         return MessageContext(
             character_state=character_state,
@@ -243,11 +239,9 @@ class ChatService:
         message_context = self._build_message_context(request)
 
         # Generate system prompt
-        system_prompt = self.character_service.generate_system_prompt(
-            character_id=request.character_id,
-            user_preferences=user_preferences,
-            context=message_context.dict() if message_context else None
-        )
+        system_prompt = self.character_service.get_prompt(request.character_id)
+        if not system_prompt:
+            raise ValueError(f"Character not found: {request.character_id}")
 
         # Add tool descriptions if plugin manager available
         if self.plugin_manager:
@@ -300,7 +294,7 @@ class ChatService:
         try:
             # Get recent diaries for this character
             diaries = self.diary_service.list_diaries(
-                diary_name=character_id,
+                character_id=character_id,
                 limit=10
             )
 
@@ -379,25 +373,6 @@ class ChatService:
             context_parts.append(f"**{date_part}的日记**\n{content_without_tag}\n")
 
         return "\n".join(context_parts)
-
-    def _add_diary_context_to_prompt(self, system_prompt: str, diary_context: str) -> str:
-        """
-        Add diary context to system prompt.
-
-        Args:
-            system_prompt: Original system prompt
-            diary_context: Formatted diary context
-
-        Returns:
-            Enhanced system prompt with diary context
-        """
-        return f"""{system_prompt}
-
-{diary_context}
-
-请参考这些回忆，在对话中可以自然地提及过去的事情，让对话更有连续性和亲切感。
-但不要刻意提及，要自然融入。
-"""
 
     def _extract_response_without_tool_calls(self, response: str) -> str:
         """

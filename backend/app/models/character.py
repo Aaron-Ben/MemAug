@@ -12,6 +12,7 @@ Each character has:
 """
 
 from pydantic import BaseModel, Field
+from typing import Optional
 
 
 class UserCharacter(BaseModel):
@@ -19,3 +20,9 @@ class UserCharacter(BaseModel):
     character_id: str = Field(..., description="UUID4 of the character")
     name: str = Field(..., description="Character display name")
     created_at: str = Field(..., description="ISO format creation timestamp")
+
+
+# Empty class for backward compatibility - user preferences are not currently implemented
+class UserCharacterPreference(BaseModel):
+    """Placeholder for user character preferences (not currently implemented)."""
+    pass

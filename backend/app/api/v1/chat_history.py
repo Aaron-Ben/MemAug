@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 import logging
 
-from app.services.chat_history_service import ChatHistoryService, CharacterMappingService
+from app.services.chat_history_service import ChatHistoryService
 from app.schemas.chat_history import (
     CreateTopicRequest,
     TopicResponse,
@@ -42,8 +42,7 @@ async def create_topic(
     Create a new chat topic.
 
     Request Body:
-    - character_id: Character ID (e.g., "sister_001") - will be mapped to UUID
-    - character_uuid: Character UUID (optional, takes precedence over character_id)
+    - character_id: Character ID (UUID)
 
     Returns:
         Created topic information with topic_id (Unix timestamp)
@@ -51,26 +50,18 @@ async def create_topic(
     Example:
     ```json
     {
-        "character_id": "sister_001"
+        "character_id": "550e8400-e29b-41d4-a716-446655440000"
     }
     ```
     """
     try:
-        # Resolve character UUID
-        character_uuid = request.character_uuid
-        if character_uuid is None:
-            if request.character_id is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Either character_id or character_uuid must be provided"
-                )
-            character_uuid = service.mapping_service.get_or_create_mapping(request.character_id)
+        character_id = request.character_id
 
         # Create topic
-        topic_id = service.create_topic(user_id, character_uuid)
+        topic_id = service.create_topic(user_id, character_id)
 
         # Get topic info
-        topics = service.list_topics(user_id, character_uuid)
+        topics = service.list_topics(user_id, character_id)
         topic = next((t for t in topics if t.topic_id == topic_id), None)
 
         if topic is None:
@@ -78,7 +69,7 @@ async def create_topic(
 
         return TopicResponse(
             topic_id=topic.topic_id,
-            character_uuid=topic.character_uuid,
+            character_id=topic.character_id,
             created_at=datetime.fromtimestamp(topic.created_at),
             updated_at=datetime.fromtimestamp(topic.updated_at),
             message_count=topic.message_count
@@ -93,7 +84,6 @@ async def create_topic(
 
 @router.get("", response_model=TopicListResponse)
 async def list_topics(
-    character_uuid: Optional[str] = None,
     character_id: Optional[str] = None,
     user_id: str = Depends(get_mock_user_id),
     service: ChatHistoryService = Depends(get_chat_history_service)
@@ -102,29 +92,23 @@ async def list_topics(
     List chat topics for a user.
 
     Query Parameters:
-    - character_uuid: Filter by character UUID
-    - character_id: Filter by character ID (will be mapped to UUID)
+    - character_id: Filter by character ID (UUID)
 
     Returns:
         List of topics sorted by update time (newest first)
 
     Example:
-    GET /api/v1/chat/topics?character_id=sister_001
+    GET /api/v1/chat/topics?character_id=550e8400-e29b-41d4-a716-446655440000
     """
     try:
-        # Resolve character UUID
-        filter_uuid = character_uuid
-        if filter_uuid is None and character_id is not None:
-            filter_uuid = service.mapping_service.get_character_uuid(character_id)
-
         # List topics
-        topics = service.list_topics(user_id, filter_uuid)
+        topics = service.list_topics(user_id, character_id)
 
         return TopicListResponse(
             topics=[
                 TopicResponse(
                     topic_id=t.topic_id,
-                    character_uuid=t.character_uuid,
+                    character_id=t.character_id,
                     created_at=datetime.fromtimestamp(t.created_at),
                     updated_at=datetime.fromtimestamp(t.updated_at),
                     message_count=t.message_count
@@ -142,7 +126,7 @@ async def list_topics(
 @router.delete("/{topic_id}", response_model=DeleteTopicResponse)
 async def delete_topic(
     topic_id: int,
-    character_uuid: Optional[str] = None,
+    character_id: Optional[str] = None,
     user_id: str = Depends(get_mock_user_id),
     service: ChatHistoryService = Depends(get_chat_history_service)
 ):
@@ -153,7 +137,7 @@ async def delete_topic(
     - topic_id: Topic ID (Unix timestamp)
 
     Query Parameters:
-    - character_uuid: Optional character UUID for validation
+    - character_id: Optional character ID for validation
 
     Returns:
         Success status
@@ -162,7 +146,7 @@ async def delete_topic(
     DELETE /api/v1/chat/topics/1707523200
     """
     try:
-        success = service.delete_topic(user_id, topic_id, character_uuid)
+        success = service.delete_topic(user_id, topic_id, character_id)
 
         if success:
             return DeleteTopicResponse(
@@ -183,7 +167,7 @@ async def delete_topic(
 @router.get("/{topic_id}/history", response_model=ChatHistoryResponse)
 async def get_topic_history(
     topic_id: int,
-    character_uuid: Optional[str] = None,
+    character_id: Optional[str] = None,
     user_id: str = Depends(get_mock_user_id),
     service: ChatHistoryService = Depends(get_chat_history_service)
 ):
@@ -194,7 +178,7 @@ async def get_topic_history(
     - topic_id: Topic ID (Unix timestamp)
 
     Query Parameters:
-    - character_uuid: Optional character UUID (required if topic not in default location)
+    - character_id: Optional character ID (required if topic not in default location)
 
     Returns:
         Chat history with messages
@@ -203,29 +187,21 @@ async def get_topic_history(
     GET /api/v1/chat/topics/1707523200/history
     """
     try:
-        # Get topic to find character_uuid if not provided
-        if character_uuid is None:
+        # Get topic to find character_id if not provided
+        if character_id is None:
             topics = service.list_topics(user_id)
             topic = next((t for t in topics if t.topic_id == topic_id), None)
             if topic is None:
                 raise HTTPException(status_code=404, detail=f"Topic {topic_id} not found")
-            character_uuid = topic.character_uuid
+            character_id = topic.character_id
 
         # Get messages
-        messages = service.get_topic_history(user_id, topic_id, character_uuid)
+        messages = service.get_topic_history(user_id, topic_id, character_id)
 
         return ChatHistoryResponse(
             topic_id=topic_id,
-            character_uuid=character_uuid,
-            messages=[
-                ChatMessageResponse(
-                    message_id=msg.message_id,
-                    role=msg.role,
-                    content=msg.content,
-                    timestamp=datetime.fromtimestamp(msg.timestamp)
-                )
-                for msg in messages
-            ],
+            character_id=character_id,
+            messages=messages,  # ChatMessage objects already have all fields
             total=len(messages)
         )
 
@@ -234,31 +210,3 @@ async def get_topic_history(
     except Exception as e:
         logger.error(f"Error getting topic history: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting topic history: {str(e)}")
-
-
-@router.get("/mappings/resolve")
-async def resolve_character_mapping(
-    character_id: str,
-    service: ChatHistoryService = Depends(get_chat_history_service)
-):
-    """
-    Resolve character_id to character_uuid.
-
-    Query Parameters:
-    - character_id: Character ID to resolve
-
-    Returns:
-        Character UUID (existing or newly created)
-
-    Example:
-    GET /api/v1/chat/topics/mappings/resolve?character_id=sister_001
-    """
-    try:
-        character_uuid = service.mapping_service.get_or_create_mapping(character_id)
-        return {
-            "character_id": character_id,
-            "character_uuid": character_uuid
-        }
-    except Exception as e:
-        logger.error(f"Error resolving mapping: {e}")
-        raise HTTPException(status_code=500, detail=f"Error resolving mapping: {str(e)}")

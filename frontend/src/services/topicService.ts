@@ -10,7 +10,6 @@ import type {
 
 export interface CreateTopicRequest {
   character_id?: string;
-  character_uuid?: string;
 }
 
 /**
@@ -23,7 +22,7 @@ export async function createTopic(request: CreateTopicRequest): Promise<Topic> {
   });
   return {
     topic_id: response.topic_id,
-    character_uuid: response.character_uuid,
+    character_id: response.character_id,
     created_at: new Date(response.created_at),
     updated_at: new Date(response.updated_at),
     message_count: response.message_count,
@@ -31,10 +30,10 @@ export async function createTopic(request: CreateTopicRequest): Promise<Topic> {
 }
 
 /**
- * List all topics, optionally filtered by character UUID (character_id IS the UUID)
+ * List all topics, optionally filtered by character ID
  */
-export async function listTopics(characterUuid?: string): Promise<TopicListResponse> {
-  const url = API_ENDPOINTS.topicList(characterUuid);
+export async function listTopics(characterId?: string): Promise<TopicListResponse> {
+  const url = API_ENDPOINTS.topicList(characterId);
   return apiRequest<TopicListResponse>(url);
 }
 
@@ -43,10 +42,10 @@ export async function listTopics(characterUuid?: string): Promise<TopicListRespo
  */
 export async function deleteTopic(
   topicId: number,
-  characterUuid?: string
+  characterId?: string
 ): Promise<void> {
   const url = API_ENDPOINTS.topicDelete(topicId);
-  const body = characterUuid ? { character_uuid: characterUuid } : undefined;
+  const body = characterId ? { character_id: characterId } : undefined;
   await apiRequest<void>(url, {
     method: 'DELETE',
     ...(body && { body: JSON.stringify(body) }),
@@ -58,9 +57,9 @@ export async function deleteTopic(
  */
 export async function getTopicHistory(
   topicId: number,
-  characterUuid?: string
+  characterId?: string
 ): Promise<ChatHistoryResponse> {
-  const url = API_ENDPOINTS.topicHistory(topicId, characterUuid);
+  const url = API_ENDPOINTS.topicHistory(topicId, characterId);
   return apiRequest<ChatHistoryResponse>(url);
 }
 

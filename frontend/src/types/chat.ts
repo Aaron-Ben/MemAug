@@ -45,6 +45,7 @@ export interface DisplayMessage {
   isUser: boolean;
   timestamp: Date;
   emotion?: EmotionState;
+  name?: string;  // Optional: role/user name
 }
 
 export interface ConversationHistory {
@@ -90,7 +91,7 @@ export interface TTSResponse {
 // Topic types for chat history management
 export interface Topic {
   topic_id: number;
-  character_uuid: string;
+  character_id: string;
   created_at: Date;
   updated_at: Date;
   message_count: number;
@@ -103,15 +104,16 @@ export interface TopicListItem {
 }
 
 export interface ChatMessageResponse {
-  message_id: string;
+  id: string;
   role: string;
+  name: string;
   content: string;
-  timestamp: Date;
+  timestamp: number;  // Milliseconds since epoch
 }
 
 export interface TopicResponse {
   topic_id: number;
-  character_uuid: string;
+  character_id: string;
   created_at: Date;
   updated_at: Date;
   message_count: number;

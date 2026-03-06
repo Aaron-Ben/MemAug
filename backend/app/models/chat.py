@@ -1,33 +1,43 @@
 """Chat history data models for message and topic management."""
 
-from typing import List, Optional
+import time
+import random
+import string
+from typing import List
 from pydantic import BaseModel, Field
-from datetime import datetime
-import uuid
 
 
 class ChatMessage(BaseModel):
     """Single message in a chat conversation."""
-    message_id: str = Field(default_factory=lambda: f"msg-{uuid.uuid4().hex}", description="Unique message ID")
+    id: str = Field(..., description="Unique message ID (msg_{timestamp}_{role}_{random})")
     role: str = Field(..., description="Message role: 'user' or 'assistant'")
+    name: str = Field(..., description="Character/User name")
     content: str = Field(..., description="Message content")
-    timestamp: int = Field(default_factory=lambda: int(datetime.now().timestamp()), description="Unix timestamp")
+    timestamp: int = Field(..., description="Unix timestamp in milliseconds")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "message_id": "msg-abc123",
+                "id": "msg_1770291136799_user_k6mjdfb",
                 "role": "user",
+                "name": "用户名",
                 "content": "你好",
-                "timestamp": 1707523200
+                "timestamp": 1770291136799
             }
         }
+
+    @staticmethod
+    def generate_id(role: str) -> str:
+        """Generate unique message ID."""
+        timestamp_ms = int(time.time() * 1000)
+        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        return f"msg_{timestamp_ms}_{role}_{random_suffix}"
 
 
 class ChatTopic(BaseModel):
     """Topic information metadata."""
     topic_id: int = Field(..., description="Topic ID (Unix timestamp)")
-    character_uuid: str = Field(..., description="Character UUID")
+    character_id: str = Field(..., description="Character ID")
     created_at: int = Field(..., description="Creation timestamp (from filesystem)")
     updated_at: int = Field(..., description="Last update timestamp (from filesystem)")
     message_count: int = Field(..., description="Number of messages in topic")
@@ -36,7 +46,7 @@ class ChatTopic(BaseModel):
         json_schema_extra = {
             "example": {
                 "topic_id": 1707523200,
-                "character_uuid": "550e8400-e29b-41d4-a716-446655440000",
+                "character_id": "550e8400-e29b-41d4-a716-446655440000",
                 "created_at": 1707523200,
                 "updated_at": 1707526800,
                 "message_count": 10
@@ -53,16 +63,18 @@ class ChatHistory(BaseModel):
             "example": {
                 "messages": [
                     {
-                        "message_id": "msg-abc123",
+                        "id": "msg_1770291136799_user_k6mjdfb",
                         "role": "user",
+                        "name": "用户名",
                         "content": "你好",
-                        "timestamp": 1707523200
+                        "timestamp": 1770291136799
                     },
                     {
-                        "message_id": "msg-def456",
+                        "id": "msg_1770291136807_assistant_t5241e8",
                         "role": "assistant",
-                        "content": "哥哥回来啦！",
-                        "timestamp": 1707523201
+                        "name": "角色名",
+                        "content": "回复内容",
+                        "timestamp": 1770291136807
                     }
                 ]
             }

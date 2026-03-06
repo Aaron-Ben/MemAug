@@ -13,6 +13,7 @@ interface TraditionalChatPanelProps {
   onVoiceInputStart?: () => void;
   onVoiceInputEnd?: () => void;
   placeholder?: string;
+  characterId?: string;
 }
 
 export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
@@ -22,7 +23,8 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
   onSendMessage,
   onVoiceInputStart,
   onVoiceInputEnd,
-  placeholder = '和妹妹聊聊天吧～',
+  placeholder = '聊聊天吧～',
+  characterId,
 }) => {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -107,7 +109,7 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
       const audioBlob = await recorderRef.current.stop();
       recorderRef.current = null;
 
-      const result = await recognizeFromBlob(audioBlob, { characterId: 'sister_001' });
+      const result = await recognizeFromBlob(audioBlob, { characterId: characterId || 'sister_001' });
 
       if (result.success && result.text) {
         const newText = input + (input ? ' ' : '') + result.text;
@@ -157,7 +159,7 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
           {messages.length === 0 && !loading && (
             <div className="flex flex-col items-center justify-center min-h-[300px] text-neutral-400 dark:text-neutral-500 gap-4">
               <div className="text-6xl opacity-60">🌸</div>
-              <div className="text-base">开始和妹妹聊天吧～</div>
+              <div className="text-base">开始聊天吧～</div>
             </div>
           )}
 
@@ -285,7 +287,6 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
               title="发送"
               type="button"
             >
-              <span className="hidden md:inline">发送</span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
                 <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
               </svg>

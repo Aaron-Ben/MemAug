@@ -1,9 +1,10 @@
 """Character API endpoints - Simplified for file system based storage."""
 
-from typing import Optional
+from typing import Optional, Dict
 from fastapi import APIRouter, HTTPException, Depends
 
 from app.services.character_storage_service import CharacterStorageService
+from app.services.chat_history_service import ChatHistoryService
 from app.schemas.character import (
     CreateCharacterRequest,
     UpdateCharacterPromptRequest,
@@ -17,6 +18,9 @@ router = APIRouter(prefix="/api/v1/character", tags=["character"])
 # Global character storage service instance
 _character_storage_service: Optional[CharacterStorageService] = None
 
+# User preferences store (for backward compatibility, currently empty)
+_user_preferences_store: Dict[str, any] = {}
+
 
 def get_character_storage_service() -> CharacterStorageService:
     """Get or create the character storage service singleton."""
@@ -26,6 +30,16 @@ def get_character_storage_service() -> CharacterStorageService:
     return _character_storage_service
 
 
+def get_chat_history_service() -> ChatHistoryService:
+    """Get chat history service instance."""
+    return ChatHistoryService()
+
+
+def get_mock_user_id() -> str:
+    """Mock user ID for development."""
+    return "user_default"
+
+
 # ----------------------------------------------------------------------
 # User Character Management Endpoints
 # ----------------------------------------------------------------------
@@ -33,11 +47,15 @@ def get_character_storage_service() -> CharacterStorageService:
 @router.post("/create", response_model=UserCharacterResponse, status_code=201)
 async def create_character(
     request: CreateCharacterRequest,
-    storage: CharacterStorageService = Depends(get_character_storage_service)
+    storage: CharacterStorageService = Depends(get_character_storage_service),
+    history_service: ChatHistoryService = Depends(get_chat_history_service)
 ):
     """Create a new character with name and prompt."""
     try:
         character = storage.create_character(request.name, request.prompt)
+        # Auto-create a topic for the new character
+        user_id = get_mock_user_id()
+        topic_id = history_service.create_topic(user_id, character.character_id)
         return UserCharacterResponse(character=character)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

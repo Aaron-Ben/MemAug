@@ -17,7 +17,6 @@ class ChatRequest(BaseModel):
     """Request for character chat."""
     message: str = Field(..., description="User's message to the character")
     character_id: str = Field(default="sister_001", description="Character to chat with")
-    character_uuid: Optional[str] = Field(None, description="Character UUID (alternative to character_id)")
     topic_id: Optional[int] = Field(None, description="Topic ID for continuing a conversation")
     conversation_history: Optional[List[Dict[str, str]]] = Field(
         None, description="Previous conversation messages for context"
@@ -28,7 +27,7 @@ class ChatRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "message": "我回来了",
-                "character_id": "sister_001",
+                "character_id": "550e8400-e29b-41d4-a716-446655440000",
                 "conversation_history": [
                     {"role": "user", "content": "我出门了"},
                     {"role": "assistant", "content": "哥哥路上小心～"}
@@ -42,7 +41,6 @@ class ChatResponse(BaseModel):
     """Response from character chat."""
     message: str = Field(..., description="Character's response message")
     character_id: str = Field(..., description="Character that generated the response")
-    character_uuid: Optional[str] = Field(None, description="Character UUID")
     topic_id: Optional[int] = Field(None, description="Topic ID for the conversation")
     context_used: Optional[MessageContext] = Field(None, description="Context information used")
     timestamp: datetime = Field(default_factory=datetime.now, description="Response timestamp")
@@ -51,7 +49,7 @@ class ChatResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "message": "哥哥回来啦！今天过得怎么样呀？我等你等好久呢～",
-                "character_id": "sister_001"
+                "character_id": "550e8400-e29b-41d4-a716-446655440000"
             }
         }
 
@@ -71,15 +69,6 @@ class VoiceResponse(BaseModel):
     success: bool = Field(..., description="Whether recognition was successful")
     error: Optional[str] = Field(None, description="Error message if recognition failed")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "text": "你好啊",
-                "event": None,
-                "success": True
-            }
-        }
-
 
 class TTSRequest(BaseModel):
     """Request for text-to-speech synthesis."""
@@ -87,14 +76,6 @@ class TTSRequest(BaseModel):
     engine: str = Field(default="vits", description="TTS engine: 'vits' or 'pyttsx3'")
     character_id: str = Field(default="sister_001", description="Character ID (for voice selection)")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "text": "你好，哥哥！",
-                "engine": "vits",
-                "character_id": "sister_001"
-            }
-        }
 
 
 class TTSResponse(BaseModel):
@@ -103,12 +84,3 @@ class TTSResponse(BaseModel):
     audio_path: Optional[str] = Field(None, description="Path to the generated audio file")
     error: Optional[str] = Field(None, description="Error message if synthesis failed")
     engine: str = Field(..., description="TTS engine used")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "audio_path": "/api/v1/chat/tts/audio/cache_voice.wav",
-                "engine": "vits"
-            }
-        }
