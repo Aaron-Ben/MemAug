@@ -469,12 +469,12 @@ async fn search_histories(
     user_name: &str,
     agent_name: &str,
 ) -> Result<Vec<String>> {
-    let topics_dir = chat_path.join("UserData").join(agent_uuid).join("topics");
+    let topics_dir = chat_path.join(agent_uuid).join("topics");
     if !topics_dir.exists() {
         return Ok(Vec::new());
     }
 
-    let pattern = topics_dir.join("*").join("history.json");
+    let pattern = topics_dir.join("*.json");
     let mut history_files: Vec<(PathBuf, SystemTime)> = Vec::new();
     for entry in glob(&pattern.to_string_lossy())? {
         if let Ok(path) = entry {
@@ -697,17 +697,23 @@ async fn perform_rerank_request(documents: &[String], query: &str, config: &Conf
 // --- Helper & Utility Functions ---
 
 async fn find_agent_info(chat_path: &Path, maid_name: &str) -> Result<Option<AgentInfo>> {
-    let agents_dir = chat_path.join("Agents");
-    let mut read_dir = fs::read_dir(agents_dir).await?;
+    // 直接在 chat_path 下查找角色目录
+    let mut read_dir = fs::read_dir(chat_path).await?;
     while let Some(entry) = read_dir.next_entry().await? {
         let path = entry.path();
         if path.is_dir() {
-            let config_path = path.join("config.json");
-            if let Ok(content) = fs::read_to_string(config_path).await {
-                if let Ok(config) = serde_json::from_str::<AgentConfig>(&content) {
-                    if config.name.contains(maid_name) {
+            // 尝试从 prompt.md 读取角色名
+            let prompt_path = path.join("prompt.md");
+            if let Ok(content) = fs::read_to_string(&prompt_path).await {
+                // 从 prompt.md 第一行提取角色名 (格式: # 角色名)
+                if let Some(first_line) = content.lines().next() {
+                    let name = first_line.trim_start_matches('#').trim();
+                    let dir_name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    if !name.is_empty() && (name.contains(maid_name) || maid_name.contains(name) || dir_name == maid_name) {
                         return Ok(Some(AgentInfo {
-                            name: config.name,
+                            name: name.to_string(),
                             uuid: entry.file_name().to_string_lossy().into_owned(),
                         }));
                     }
@@ -718,13 +724,8 @@ async fn find_agent_info(chat_path: &Path, maid_name: &str) -> Result<Option<Age
     Ok(None)
 }
 
-async fn find_user_name(chat_path: &Path) -> Result<String> {
-    let settings_path = chat_path.join("settings.json");
-    if let Ok(content) = fs::read_to_string(settings_path).await {
-        if let Ok(settings) = serde_json::from_str::<UserSettings>(&content) {
-            return Ok(settings.user_name);
-        }
-    }
+async fn find_user_name(_chat_path: &Path) -> Result<String> {
+    // 默认返回 "主人"，如果需要可以从其他配置读取
     Ok("主人".to_string())
 }
 

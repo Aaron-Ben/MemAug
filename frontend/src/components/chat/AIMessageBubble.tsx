@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 
 export interface AIMessageBubbleProps {
   /** 消息内容 */
@@ -105,6 +107,43 @@ const ToolRequestCollapsible: React.FC<{ content: string }> = ({ content }) => {
 };
 
 /**
+ * 将括号格式的数学表达式转换为标准 LaTeX 格式
+ * 例如：( \Psi(x,t) ) -> $\Psi(x,t)$
+ * ( \frac{a}{b} ) -> $\frac{a}{b}$
+ */
+const convertMathNotation = (text: string): string => {
+  // 匹配括号内包含 LaTeX 数学表达式的内容
+  // 支持单行和多行数学表达式，包含常见的 LaTeX 命令
+  const patterns = [
+    // 简单情况：( \frac{a}{b} ) -> $\frac{a}{b}$
+    /\(\s*\\[a-zA-Z]+(?:\{[^}]*\}|\([^)]*\)|[^\s{}()])*\s*\)/g,
+    // 复杂情况：嵌套括号和更多 LaTeX 语法
+    /\(\s*\\[a-zA-Z]+(?:\{[^{}]*\}(?:\{[^{}]*\})*|\([^)]*\)|[^\s{}()])*[\s{}()\\a-zA-Z0-9]*\s*\)/g,
+  ];
+
+  let result = text;
+
+  // 使用所有模式进行替换
+  for (const pattern of patterns) {
+    result = result.replace(pattern, (match) => {
+      // 移除外层括号，添加 $ 符号
+      const innerContent = match.slice(1, -1).trim();
+      return `$${innerContent}$`;
+    });
+  }
+
+  // 特殊处理：检测包含 LaTeX 特征的括号内容
+  // LaTeX 特征：反斜杠后跟字母，如 \Psi, \frac, \partial, \hbar 等
+  const latexPattern = /\(\s*(?:\\[a-zA-Z]+\{?[^)]*\}?|\s*\\[a-zA-Z]+\s*)+\s*\)/g;
+  result = result.replace(latexPattern, (match) => {
+    const innerContent = match.slice(1, -1).trim();
+    return `$${innerContent}$`;
+  });
+
+  return result;
+};
+
+/**
  * AI消息气泡组件 - 专门用于显示AI的回复
  *
  * 这个组件可以独立进行样式美化，包括：
@@ -136,6 +175,8 @@ export const AIMessageBubble: React.FC<AIMessageBubbleProps> = ({
   };
 
   const { toolRequests, content: cleanContent } = parseContent(content);
+  // 转换数学符号格式
+  const formattedContent = convertMathNotation(cleanContent);
 
   return (
     <div className={clsx('flex flex-col max-w-[85%] md:max-w-[70%] items-start', className)}>
@@ -150,7 +191,8 @@ export const AIMessageBubble: React.FC<AIMessageBubbleProps> = ({
           {/* 正常的 Markdown 内容 */}
           {cleanContent && (
             <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
               components={{
                 // 标题样式
                 h1: ({ children }) => <h1 className="text-xl font-bold mt-3 mb-2">{children}</h1>,
@@ -195,7 +237,7 @@ export const AIMessageBubble: React.FC<AIMessageBubbleProps> = ({
                 em: ({ children }) => <em className="italic">{children}</em>,
               }}
             >
-              {cleanContent}
+              {formattedContent}
             </ReactMarkdown>
           )}
         </div>
