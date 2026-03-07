@@ -6,7 +6,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 
 # 使用 SQLite 数据库
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./emotional_companionship.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./../VectorStore/emotional_companionship.db")
 
 engine = create_engine(
     DATABASE_URL,
