@@ -212,6 +212,7 @@ def handle_create(args):
             "message": f"Diary saved to {relative_path}",
             "path": relative_path,
             "character_id": character_id,
+            "character_name": character_name,
             "date": date_part
         }
 

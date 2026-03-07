@@ -2,11 +2,12 @@
 
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import clsx from 'clsx';
 import { TraditionalChatPanel } from '../components/conversation';
-import { FloatingActionButton } from '../components/ui';
 import { DiaryListModal, DiaryDetailModal, DiaryEditModal } from '../components/diary';
 import { TopicSidebar } from '../components/topics';
 import { CharacterSelector } from '../components/character/CharacterSelector';
+import { ThemeToggleButton } from '../components/ui/ThemeToggleButton';
 import { useChat } from '../hooks/useChat';
 import { useTopics } from '../hooks/useTopics';
 import { useCharacter } from '../hooks/useCharacter';
@@ -135,17 +136,46 @@ export const ChatPage: React.FC = () => {
   };
 
   return (
-    <div className="h-screen flex relative">
-      {/* Background image */}
-      <div
-        className="absolute inset-0 -z-10"
-        style={{
-          backgroundImage: `url(${backgroundImage})`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundRepeat: 'no-repeat'
-        }}
-      />
+    <div className="h-screen flex relative bg-gradient-to-br from-rose-50/30 via-white to-pink-50/20 dark:from-night-primary dark:via-night-secondary dark:to-night-primary">
+      {/* Background Image - Filter 方案 */}
+      <div className="absolute inset-0 -z-10">
+        {/* 背景图片层 - 使用 filter 方案处理暗色模式 */}
+        <div
+          className="absolute inset-0 transition-all duration-700 ease-in-out"
+          style={{
+            backgroundImage: `url(${backgroundImage})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+          }}
+        >
+          {/* 亮色模式 */}
+          <div className="absolute inset-0 opacity-40" />
+        </div>
+
+        {/* 暗色模式滤镜层 */}
+        <div
+          className="absolute inset-0 opacity-0 dark:opacity-100 transition-opacity duration-700 ease-in-out pointer-events-none"
+          style={{
+            backgroundImage: `url(${backgroundImage})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+            filter: 'brightness(0.7) grayscale(40%) contrast(0.9)',
+          }}
+        />
+
+        {/* 统一的透明度控制层 */}
+        <div className="absolute inset-0 opacity-40 dark:opacity-35 transition-opacity duration-700 ease-in-out bg-current pointer-events-none" />
+
+        {/* 微妙的纹理层 */}
+        <div
+          className="absolute inset-0 opacity-[0.03] dark:opacity-[0.05] pointer-events-none transition-opacity duration-700"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")`,
+          }}
+        />
+      </div>
 
       {/* Topic Sidebar */}
       <TopicSidebar
@@ -161,21 +191,27 @@ export const ChatPage: React.FC = () => {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col relative">
-        {/* Top bar with character selector and management button */}
-        <div className="absolute top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3 bg-gradient-to-b from-white/80 to-transparent">
-          <div className="flex items-center gap-3">
-            <CharacterSelector
-              selectedCharacterId={selectedCharacterId}
-              onCharacterChange={handleCharacterChange}
-            />
-          </div>
+        {/* 顶部左右两侧按钮组 - 分散布局避免遮挡 */}
+        {/* 左上角：角色选择器 */}
+        <div className="absolute top-4 left-4 z-40">
+          <CharacterSelector
+            selectedCharacterId={selectedCharacterId}
+            onCharacterChange={handleCharacterChange}
+          />
+        </div>
+
+        {/* 右上角：设置和主题按钮组 */}
+        <div className="absolute top-4 right-4 z-40 flex items-center gap-2">
           <button
             type="button"
             onClick={() => navigate('/characters')}
-            className="px-4 py-2 rounded-full text-xs font-semibold border-2 border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold transition-all duration-200 bg-white/80 dark:bg-neutral-800/80 backdrop-blur-sm border-2 border-rose-200 dark:border-neutral-600 text-rose-700 dark:text-rose-200 hover:border-rose-300 dark:hover:border-rose-700 hover:shadow-md active:scale-95"
+            title="角色管理"
           >
-            角色管理
+            <span>⚙️</span>
+            <span className="hidden sm:inline">管理</span>
           </button>
+          <ThemeToggleButton variant="minimal" size="sm" />
         </div>
 
         {/* Traditional Style Chat Panel - Full height */}
@@ -188,30 +224,40 @@ export const ChatPage: React.FC = () => {
           onVoiceInputEnd={handleVoiceInputEnd}
           placeholder="聊聊天吧～"
           characterId={selectedCharacterId}
+          characterName={character?.name}
         />
 
-        {/* TTS Toggle */}
-        <div className="fixed top-[72px] right-4 z-50">
+        {/* 右下角快捷操作区 - 垂直排列 */}
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 items-end">
+          {/* TTS 语音开关 */}
           <button
             onClick={() => toggleAutoPlayTTS(!autoPlayTTS)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold cursor-pointer transition-all duration-300 border-2 shadow-lg hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0 bg-gradient-to-r from-pink-300 to-pink-500 border-pink-200 text-white shadow-pink-300/30 hover:from-pink-500 hover:to-pink-600 hover:shadow-pink-400/40"
+            className={clsx(
+              "flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold cursor-pointer transition-all duration-300 border-2 shadow-lg hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0 active:scale-95 group",
+              autoPlayTTS
+                ? "bg-gradient-to-r from-rose-400 via-rose-500 to-pink-500 border-rose-300 text-white shadow-rose-soft hover:shadow-rose-soft-lg"
+                : "bg-white/90 dark:bg-neutral-800/90 backdrop-blur-sm border-neutral-200 dark:border-neutral-600 text-neutral-700 dark:text-neutral-200 hover:border-rose-300 dark:hover:border-rose-700"
+            )}
             title={autoPlayTTS ? '关闭自动播放' : '开启自动播放'}
             type="button"
           >
-            <span className="text-[13px] font-semibold hidden md:inline">
-              {autoPlayTTS ? '语音开启' : '语音关闭'}
+            <span className={clsx("text-base transition-transform duration-300", autoPlayTTS && "group-hover:scale-110")}>🔊</span>
+            <span className="text-[13px] font-semibold">
+              {autoPlayTTS ? '语音开启' : '语音'}
             </span>
           </button>
-        </div>
 
-        {/* Floating Buttons */}
-        <FloatingActionButton
-          onClick={() => setShowDiaries(true)}
-          icon="📔"
-          ariaLabel="日记本"
-          position="bottom-right"
-          index={0}
-        />
+          {/* 日记按钮 */}
+          <button
+            onClick={() => setShowDiaries(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold cursor-pointer transition-all duration-300 border-2 shadow-lg hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0 active:scale-95 group bg-gradient-to-br from-rose-400 via-rose-500 to-pink-500 border-rose-300 text-white shadow-rose-soft hover:shadow-rose-soft-lg"
+            title="日记本"
+            type="button"
+          >
+            <span className="text-base transition-transform duration-300 group-hover:rotate-12">📔</span>
+            <span className="text-[13px] font-semibold">日记</span>
+          </button>
+        </div>
         <DiaryListModal
           characterId={selectedCharacterId}
           characterName={character?.name}

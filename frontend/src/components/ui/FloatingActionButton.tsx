@@ -40,15 +40,27 @@ export const FloatingActionButton: React.FC<FloatingActionButtonProps> = ({
   return (
     <button
       className={clsx(
-        'fixed w-14 h-14 rounded-full bg-gradient-to-br from-rose-400 to-rose-500 text-white shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center z-40 hover:scale-105 active:scale-[0.98]',
-        'hover:from-rose-500 hover:to-rose-600'
+        'fixed w-14 h-14 rounded-full flex items-center justify-center z-40 transition-all duration-300',
+        'bg-gradient-to-br from-rose-400 via-rose-500 to-pink-500',
+        'text-white text-2xl',
+        'shadow-rose-soft hover:shadow-rose-soft-lg',
+        'hover:scale-110 hover:-translate-y-1',
+        'active:scale-100 active:translate-y-0',
+        'group relative'
       )}
       style={getPositionStyle(position, index)}
       onClick={onClick}
       aria-label={ariaLabel}
       title={ariaLabel}
+      type="button"
     >
-      {icon}
+      {/* 发光效果 */}
+      <div className="absolute inset-0 rounded-full bg-gradient-to-br from-rose-400 to-pink-500 opacity-0 group-hover:opacity-30 blur-md transition-opacity duration-300"></div>
+
+      {/* 图标 */}
+      <span className="relative z-10 group-hover:rotate-12 transition-transform duration-300">
+        {icon}
+      </span>
     </button>
   );
 };

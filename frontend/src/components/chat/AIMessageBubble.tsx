@@ -6,6 +6,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+import { cn } from '../../utils';
 
 export interface AIMessageBubbleProps {
   /** 消息内容 */
@@ -43,7 +45,16 @@ const formatMessageTime = (date: Date) => {
 };
 
 /**
- * 工具请求可折叠组件
+ * 检查是否为日记相关工具
+ */
+const isDiaryTool = (toolName: string): boolean => {
+  return toolName.toLowerCase().includes('daily') ||
+         toolName.toLowerCase().includes('diary') ||
+         toolName.toLowerCase().includes('日记');
+};
+
+/**
+ * 工具请求可折叠组件 - 鼠标悬停自动展开
  */
 const ToolRequestCollapsible: React.FC<{ content: string; characterId?: string; characterName?: string }> = ({ content, characterId, characterName }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -74,52 +85,122 @@ const ToolRequestCollapsible: React.FC<{ content: string; characterId?: string; 
   };
 
   const params = parseToolRequest(content);
+  const toolName = params.tool_name || 'Unknown';
+  const isDiary = isDiaryTool(toolName);
+  const todayDate = new Date().toISOString().split('T')[0];
+
+
+  // 获取显示用的角色名称
+  const displayMaidName = characterName;
 
   return (
-    <div className="my-3">
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between gap-2 px-4 py-2.5 bg-blue-50 dark:bg-blue-950/30 border-2 border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors cursor-pointer group"
-      >
-        <div className="flex items-center gap-2">
-          <svg
-            className={clsx('w-4 h-4 text-blue-600 dark:text-blue-400 transition-transform duration-200', isExpanded && 'rotate-90')}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
-          <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
-            🔧 工具调用: {params.tool_name || 'Unknown'}
+    <div
+      className="my-3 group"
+      onMouseEnter={() => setIsExpanded(true)}
+      onMouseLeave={() => setIsExpanded(false)}
+    >
+      {/* 大框：根据工具类型使用不同样式 */}
+      <div className={cn(
+        "rounded-lg p-4 transition-all duration-300 border",
+        isDiary
+          ? "bg-amber-50/95 dark:bg-stone-800/95 text-amber-900 dark:text-amber-100 border-amber-200/50 dark:border-stone-600"
+          : "bg-slate-100/90 dark:bg-slate-800/90 text-slate-800 dark:text-slate-100 border-slate-300 dark:border-slate-600"
+      )}>
+        {/* 折叠状态的标题栏 */}
+        <div className="flex items-center justify-between gap-2 cursor-pointer">
+          <div className="flex items-center gap-2">
+            <svg
+              className={cn('w-4 h-4 transition-transform duration-200', isExpanded && 'rotate-90')}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            <span className={cn("font-medium flex items-center gap-1.5", isDiary ? "text-sm" : "text-sm")}>
+              {isDiary ? (
+                <><span className="text-base">📔</span>日记记录</>
+              ) : (
+                <><span className="text-base">⚙️</span><span className="text-slate-600 dark:text-slate-300">工具调用</span>: <span className="text-sky-600 dark:text-sky-400 font-mono text-xs">{toolName}</span></>
+              )}
+            </span>
+          </div>
+          <span className={cn('text-xs transition-transform duration-200', isExpanded && 'rotate-180')}>
+            ▼
           </span>
         </div>
-        <span className={clsx('text-xs text-blue-500 dark:text-blue-400 transition-transform duration-200', isExpanded && 'rotate-180')}>
-          ▼
-        </span>
-      </button>
 
-      {isExpanded && (
-        <div className="mt-2 px-4 py-3 bg-blue-50/50 dark:bg-blue-950/20 border-2 border-blue-200 dark:border-blue-800 rounded-lg">
-          <div className="space-y-1.5 text-sm max-h-96 overflow-y-auto">
-            {Object.entries(params).map(([key, value]) => (
-              <div key={key} className="flex gap-2">
-                <span className="font-semibold text-blue-700 dark:text-blue-400 min-w-[80px] flex-shrink-0 text-sm">
-                  {key}:
-                </span>
-                <div className="text-neutral-700 dark:text-neutral-300 break-words flex-1 text-sm prose prose-sm max-w-none dark:prose-invert">
-                  <ReactMarkdown
-                    remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
-                    rehypePlugins={[rehypeKatex]}
-                  >
-                    {value}
-                  </ReactMarkdown>
+        {/* 展开后的内容区域 */}
+        {isExpanded && (
+          <div className="mt-4 animate-in fade-in slide-in-from-top-2 duration-200">
+            {/* 日记特殊样式：显示日记头部 */}
+            {isDiary && (
+              <>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 border-b border-amber-200/50 dark:border-stone-600 pb-2">
+                  <h2 className="text-xl font-serif font-bold text-amber-900 dark:text-amber-100">{displayMaidName} Diary</h2>
+                  <span className="text-sm text-amber-600/70 dark:text-amber-400/60">{todayDate}</span>
                 </div>
-              </div>
-            ))}
+                {params.maid && (
+                  <div className="mb-4">
+                    <span className="text-amber-600/70 dark:text-amber-400/60 font-medium">Maid:</span>
+                    <span className="ml-2 px-2 py-0.5 bg-amber-100/70 dark:bg-amber-900/40 rounded text-amber-800 dark:text-amber-200 font-medium">
+                      {displayMaidName}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* 内容区域 */}
+            <div className={cn(
+              "rounded-md p-4 space-y-4 max-h-96 overflow-y-auto",
+              isDiary
+                ? "bg-amber-100/60 dark:bg-stone-700/50 text-amber-900/90 dark:text-amber-100/90 text-sm"
+                : "bg-slate-50/80 dark:bg-slate-900/50 text-slate-700 dark:text-slate-300 p-3 space-y-2 text-sm"
+            )}>
+              {Object.entries(params).map(([key, value]) => {
+                // 过滤掉已经在头部显示的字段
+                if (isDiary && (key === 'tool_name' || key === 'maid' || key === 'Date')) return null;
+
+                return (
+                  <div key={key} className={isDiary ? "space-y-1" : "flex gap-2"}>
+                    {isDiary ? (
+                      // 日记风格：直接显示内容
+                      <ReactMarkdown
+                        remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={{
+                          p: ({ node, ...props }) => <p className="mb-2 leading-relaxed" {...props} />,
+                          strong: ({ node, ...props }) => <span className="text-amber-700 dark:text-amber-300 font-semibold" {...props} />,
+                          ul: ({ node, ...props }) => <ul className="list-disc pl-5 mb-2 space-y-1" {...props} />,
+                          li: ({ node, ...props }) => <li className="mb-1" {...props} />,
+                        }}
+                      >
+                        {value}
+                      </ReactMarkdown>
+                    ) : (
+                      // 普通工具风格：键值对显示
+                      <>
+                        <span className="font-semibold min-w-[80px] flex-shrink-0 text-sm text-slate-500 dark:text-slate-400">
+                          {key}:
+                        </span>
+                        <div className="break-words flex-1 text-sm prose prose-sm max-w-none prose-headings:text-slate-700 prose-p:text-slate-600 prose-strong:text-slate-800 prose-code:text-sky-600 dark:prose-headings:text-slate-200 dark:prose-p:text-slate-300 dark:prose-strong:text-slate-100 dark:prose-code:text-sky-400">
+                          <ReactMarkdown
+                            remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
+                            rehypePlugins={[rehypeKatex]}
+                          >
+                            {value}
+                          </ReactMarkdown>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };
@@ -165,6 +246,8 @@ export const AIMessageBubble: React.FC<AIMessageBubbleProps> = ({
   isStreaming = false,
   timestamp,
   className,
+  characterId,
+  characterName,
 }) => {
   // 解析消息内容，提取工具请求
   const parseContent = (text: string) => {
@@ -187,33 +270,43 @@ export const AIMessageBubble: React.FC<AIMessageBubbleProps> = ({
 
   return (
     <div className={clsx('flex flex-col max-w-[85%] md:max-w-[70%] items-start', className)}>
-      {/* AI消息气泡主体 */}
-      <div className="bg-white dark:bg-neutral-800 text-neutral-800 dark:text-neutral-100 rounded-2xl rounded-bl-sm px-5 py-3 shadow-sm border border-neutral-100 dark:border-neutral-700">
-        <div className="text-base leading-relaxed break-words markdown-content">
-          {/* 工具请求折叠框 */}
-          {toolRequests.map((toolRequest, index) => (
-            <ToolRequestCollapsible key={index} content={toolRequest} />
-          ))}
+      {/* AI消息气泡主体 - 精美的玻璃态效果 */}
+      <div className="relative group">
+        {/* 背景光晕效果 */}
+        <div className="absolute -inset-0.5 bg-gradient-to-r from-rose-200 to-pink-200 dark:from-rose-950 dark:to-pink-950 rounded-2xl rounded-bl-sm opacity-0 group-hover:opacity-30 transition-opacity duration-300 blur-md"></div>
 
-          {/* 正常的 Markdown 内容 */}
-          {cleanContent && (
-            <ReactMarkdown
-              remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
-              rehypePlugins={[rehypeKatex]}
-            >
-              {formattedContent}
-            </ReactMarkdown>
+        <div className="relative bg-white/80 dark:bg-night-elevated/80 backdrop-blur-sm text-neutral-800 dark:text-neutral-100 rounded-2xl rounded-bl-sm px-5 py-3 shadow-soft dark:shadow-dark-soft border border-neutral-100/50 dark:border-neutral-700/50 hover:shadow-soft-lg dark:hover:shadow-dark-soft-lg transition-all duration-300">
+          <div className="text-base leading-relaxed break-words markdown-content">
+            {/* 工具请求折叠框 */}
+            {toolRequests.map((toolRequest, index) => (
+              <ToolRequestCollapsible
+                key={index}
+                content={toolRequest}
+                characterId={characterId}
+                characterName={characterName}
+              />
+            ))}
+
+            {/* 正常的 Markdown 内容 */}
+            {cleanContent && (
+              <ReactMarkdown
+                remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
+                rehypePlugins={[rehypeKatex]}
+              >
+                {formattedContent}
+              </ReactMarkdown>
+            )}
+          </div>
+
+          {/* 流式输出时的指示器 - 精美的动画效果 */}
+          {isStreaming && (
+            <div className="flex gap-1.5 mt-3">
+              <span className="w-2 h-2 rounded-full bg-gradient-to-r from-rose-400 to-pink-500 animate-pulse-subtle"></span>
+              <span className="w-2 h-2 rounded-full bg-gradient-to-r from-rose-400 to-pink-500 animate-pulse-subtle delay-150"></span>
+              <span className="w-2 h-2 rounded-full bg-gradient-to-r from-rose-400 to-pink-500 animate-pulse-subtle delay-300"></span>
+            </div>
           )}
         </div>
-
-        {/* 流式输出时的指示器 */}
-        {isStreaming && (
-          <div className="flex gap-1 mt-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 dark:bg-rose-500 animate-pulse-subtle"></span>
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 dark:bg-rose-500 animate-pulse-subtle delay-150"></span>
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 dark:bg-rose-500 animate-pulse-subtle delay-225"></span>
-          </div>
-        )}
       </div>
 
       {/* 消息时间戳 */}
@@ -227,16 +320,21 @@ export const AIMessageBubble: React.FC<AIMessageBubbleProps> = ({
 };
 
 /**
- * AI加载状态组件
+ * AI加载状态组件 - 精美的加载动画
  */
 export const AILoadingBubble: React.FC<{ className?: string }> = ({ className }) => {
   return (
     <div className={clsx('flex flex-col max-w-[85%] md:max-w-[70%] items-start', className)}>
-      <div className="bg-white dark:bg-neutral-800 rounded-2xl rounded-bl-sm px-5 py-3 shadow-sm border border-neutral-100 dark:border-neutral-700 min-w-[60px]">
-        <div className="flex gap-1.5 items-center">
-          <span className="w-2 h-2 rounded-full bg-rose-400 dark:bg-rose-500 animate-typing"></span>
-          <span className="w-2 h-2 rounded-full bg-rose-400 dark:bg-rose-500 animate-typing delay-150"></span>
-          <span className="w-2 h-2 rounded-full bg-rose-400 dark:bg-rose-500 animate-typing delay-225"></span>
+      <div className="relative">
+        {/* 发光效果 */}
+        <div className="absolute -inset-0.5 bg-gradient-to-r from-rose-200 to-pink-200 dark:from-rose-950 dark:to-pink-950 rounded-2xl rounded-bl-sm opacity-30 animate-pulse-subtle blur-md"></div>
+
+        <div className="relative bg-white/80 dark:bg-night-elevated/80 backdrop-blur-sm rounded-2xl rounded-bl-sm px-5 py-3 shadow-soft dark:shadow-dark-soft border border-neutral-100/50 dark:border-neutral-700/50 min-w-[60px]">
+          <div className="flex gap-2 items-center">
+            <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-r from-rose-400 to-pink-500 animate-typing"></span>
+            <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-r from-rose-400 to-pink-500 animate-typing delay-150"></span>
+            <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-r from-rose-400 to-pink-500 animate-typing delay-225"></span>
+          </div>
         </div>
       </div>
     </div>

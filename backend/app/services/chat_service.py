@@ -132,14 +132,14 @@ class ChatService:
         """
         Generate a streaming character-aware response with tool calling support.
 
-        VCPToolBox pattern:
+        pattern:
         1. Stream LLM response
         2. Check for tool calls <<<[TOOL_REQUEST]>>>...<<<[END_TOOL_REQUEST]>>>
         3. If tools found: execute and stream new response with results
         4. Repeat until no more tool calls
 
         Yields:
-            Response chunks (including tool call markers - VCPToolBox pattern)
+            Response chunks
         """
         # Build initial messages
         messages = await self._build_messages(request, user_preferences, user_id)
@@ -194,29 +194,10 @@ class ChatService:
             # Log detected tool calls
             logger.info(f"[Tool Call] Executing {len(tool_calls)} tool(s): {[tc.name for tc in tool_calls]}")
 
-            # Replace placeholders in tool call arguments
-            from datetime import datetime
-            today = datetime.now().strftime("%Y-%m-%d")
-            current_time = datetime.now().strftime("%H:%M")
-            character_id = request.character_id
-
-            # Get character name for diary plugin
-            character = self.character_service.get_character(character_id)
-            character_name = character.name if character else character_id
-
-            logger.info(f"[Tool Call] character_id={character_id}, character_name={character_name}")
-
+            # Log tool call arguments (placeholders already pre-replaced in _build_messages)
             for tc in tool_calls:
                 if tc.args:
-                    logger.info(f"[Tool Call] Before replacement: {tc.name} args={tc.args}")
-                    for key, value in tc.args.items():
-                        if isinstance(value, str):
-                            value = value.replace("{CHARACTER_ID}", character_id)
-                            value = value.replace("{CHARACTER_NAME}", character_name)
-                            value = value.replace("{TODAY}", today)
-                            value = value.replace("{CURRENT_TIME}", current_time)
-                            tc.args[key] = value
-                    logger.info(f"[Tool Call] After replacement: {tc.name} args={tc.args}")
+                    logger.info(f"[Tool Call] {tc.name} args={tc.args}")
 
             # Execute tools
             if self.tool_executor:
@@ -267,9 +248,13 @@ class ChatService:
 
         # Add tool descriptions if plugin manager available
         if self.plugin_manager:
-            tool_description = self.plugin_manager.get_all_tools_description()
-            if tool_description:
-                system_prompt = f"{system_prompt}\n\n{tool_description}"
+            # Get all tools descriptions
+            tools_description = self.plugin_manager.get_all_tools_description()
+
+            # Add tools description to system prompt
+            system_prompt = f"{system_prompt}\n\n{tools_description}"
+
+            logger.info(f"[Tool Call] Added tools description to system prompt")
 
         # Build messages list
         messages = [{"role": "system", "content": system_prompt}]

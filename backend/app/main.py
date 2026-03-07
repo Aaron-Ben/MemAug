@@ -39,7 +39,10 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelnam
 
 # Add file handler to loggers
 for logger_name in ["app.services.chat_service", "plugins.tool_executor", "plugins.plugin", "plugins.tool_call_parser", "app.api.v1.chat", "app.api.v1.diary", "app.vector_index"]:
-    logging.getLogger(logger_name).addHandler(file_handler)
+    logger = logging.getLogger(logger_name)
+    logger.addHandler(file_handler)
+    # Also add console handler so logs appear in terminal
+    logger.addHandler(console_handler)
 
 
 @asynccontextmanager

@@ -42,10 +42,18 @@ export const UserMessageBubble: React.FC<UserMessageBubbleProps> = ({
 }) => {
   return (
     <div className={clsx('flex flex-col max-w-[85%] md:max-w-[70%] items-end', className)}>
-      {/* 用户消息气泡主体 */}
-      <div className="bg-gradient-to-br from-rose-400 to-rose-500 text-white rounded-2xl rounded-br-sm px-5 py-3 shadow-sm">
-        <div className="text-base leading-relaxed break-words">
-          {content}
+      {/* 用户消息气泡主体 - 精美渐变效果 */}
+      <div className="relative group">
+        {/* 发光效果 */}
+        <div className="absolute -inset-0.5 bg-gradient-to-r from-rose-400 to-pink-500 rounded-2xl rounded-br-sm opacity-0 group-hover:opacity-20 transition-opacity duration-300 blur-sm"></div>
+
+        <div className="relative bg-gradient-to-br from-rose-400 via-rose-500 to-pink-500 text-white rounded-2xl rounded-br-sm px-5 py-3 shadow-rose-soft hover:shadow-rose-soft-lg transition-all duration-300">
+          <div className="text-base leading-relaxed break-words font-medium">
+            {content}
+          </div>
+
+          {/* 微妙的高光效果 */}
+          <div className="absolute inset-0 rounded-2xl rounded-br-sm bg-gradient-to-br from-white/20 to-transparent pointer-events-none"></div>
         </div>
       </div>
 

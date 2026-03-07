@@ -17,17 +17,17 @@
     "invocationCommands": [
       {
         "commandIdentifier": "create",
-        "description": "**创建日记**: 用于创建一篇新的日记。AI必须提供maid, Date, 和 Content。标签(Tag)可以通过两种方式提供：1) 作为Content的最后一行 (例如 'Tag: ...')。2) 使用独立的'Tag'字段。如果同时提供，独立的'Tag'字段将覆盖Content中的标签行。文件夹路径会根据maid中的[tag]自动归类。\n重要: maid参数必须使用占位符 {CHARACTER_ID}，系统会自动将其替换为当前对话角色的UUID，插件会根据UUID查找角色名称。\n调用格式 (两种方式):\n1. 标签在Content末尾:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」{CHARACTER_ID}「末」,\nDate:「始」{TODAY}「末」,\nContent:「始」今天我和用户进行了愉快的对话...\\nTag: 开心, 交流「末」\n<<<[END_TOOL_REQUEST]>>>\n2. 使用独立Tag字段:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」{CHARACTER_ID}「末」,\nDate:「始」{TODAY}「末」,\nContent:「始」今天我重构了DailyNote插件...「末」,\nTag:「始」开发, 插件重构「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "**创建日记**: 用于创建一篇新的日记。AI必须提供maid, Date, 和 Content。标签(Tag)可以通过两种方式提供：1) 作为Content的最后一行 (例如 'Tag: ...')。2) 使用独立的'Tag'字段。如果同时提供，独立的'Tag'字段将覆盖Content中的标签行。文件夹路径会根据maid中的[tag]自动归类。\n重要: maid参数必须使用角色信息中的 character_id 值，Date参数使用当前日期（格式 YYYY-MM-DD）。\n调用格式 (两种方式):\n1. 标签在Content末尾:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[角色信息中的 character_id]「末」,\nDate:「始」2026-03-07「末」,\nContent:「始」今天我和用户进行了愉快的对话...\\nTag: 开心, 交流「末」\n<<<[END_TOOL_REQUEST]>>>\n2. 使用独立Tag字段:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[角色信息中的 character_id]「末」,\nDate:「始」2026-03-07「末」,\nContent:「始」今天我重构了DailyNote插件...「末」,\nTag:「始」开发, 插件重构「末」\n<<<[END_TOOL_REQUEST]>>>",
         "parameters": [
           {
             "name": "maid",
-            "description": "作者署名，必须使用占位符 {CHARACTER_ID}，系统会自动将其替换为当前对话角色的UUID，插件会根据UUID查找角色名称并用于目录。支持使用[文件夹]署名格式来指定存储目录。",
+            "description": "作者署名，必须使用角色信息中的 character_id 值。插件会根据 character_id 查找角色名称并用于目录。支持使用[文件夹]署名格式来指定存储目录。",
             "required": true,
             "type": "string"
           },
           {
             "name": "Date",
-            "description": "日记的日期，格式建议为 YYYY-MM-DD。",
+            "description": "日记的日期，格式为 YYYY-MM-DD（例如：2026-03-07）。",
             "required": true,
             "type": "string"
           },
@@ -47,11 +47,11 @@
       },
       {
         "commandIdentifier": "update",
-        "description": "**更新日记**: 用于编辑已存在的日记内容。AI需要提供要查找的旧内容(target)和替换的新内容(replace)。可选定'maid'来指定编辑范围。\n安全性检查: target字段长度不能少于15字符。\n重要: maid参数必须使用占位符 {CHARACTER_ID}，系统会自动将其替换为当前对话角色的UUID，插件会根据UUID查找角色名称。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」update「末」,\nmaid:「始」{CHARACTER_ID}「末」,\ntarget:「始」这是日记中要被替换掉的旧内容，至少15个字符长。「末」,\nreplace:「始」这是将要写入日记的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "**更新日记**: 用于编辑已存在的日记内容。AI需要提供要查找的旧内容(target)和替换的新内容(replace)。可选定'maid'来指定编辑范围。\n安全性检查: target字段长度不能少于15字符。\n重要: maid参数必须使用角色信息中的 character_id 值。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」update「末」,\nmaid:「始」[角色信息中的 character_id]「末」,\ntarget:「始」这是日记中要被替换掉的旧内容，至少15个字符长。「末」,\nreplace:「始」这是将要写入日记的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>",
         "parameters": [
           {
             "name": "maid",
-            "description": "指定要编辑哪个角色的日记本，必须使用占位符 {CHARACTER_ID}，系统会自动将其替换为当前对话角色的UUID，插件会根据UUID查找角色名称。支持[文件夹]格式。如果未提供，则会在所有日记本中搜索。",
+            "description": "指定要编辑哪个角色的日记本，必须使用角色信息中的 character_id 值。插件会根据 character_id 查找角色名称。支持[文件夹]格式。如果未提供，则会在所有日记本中搜索。",
             "required": false,
             "type": "string"
           },

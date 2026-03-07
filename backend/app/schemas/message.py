@@ -16,7 +16,7 @@ class MessageContext(BaseModel):
 class ChatRequest(BaseModel):
     """Request for character chat."""
     message: str = Field(..., description="User's message to the character")
-    character_id: str = Field(default="sister_001", description="Character to chat with")
+    character_id: str = Field(default="00000000-0000-0000-0000-000000000000", description="Character to chat with")
     topic_id: Optional[int] = Field(None, description="Topic ID for continuing a conversation")
     conversation_history: Optional[List[Dict[str, str]]] = Field(
         None, description="Previous conversation messages for context"

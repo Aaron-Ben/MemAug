@@ -33,19 +33,19 @@ export const DiaryCard: React.FC<DiaryCardProps> = ({
 
   return (
     <div
-      className="relative pl-6 pb-8 border-l border-neutral-200 dark:border-neutral-700 last:border-l-0 animate-message-in group cursor-pointer"
+      className="relative pl-6 pb-8 border-l border-amber-200/50 dark:border-stone-600 last:border-l-0 animate-message-in group cursor-pointer"
       onClick={() => onSelect(diary)}
     >
       {/* Date marker */}
-      <div className="absolute -left-[5px] top-0 w-2 h-2 bg-rose-400 dark:bg-rose-500 rounded-full border-2 border-white dark:border-neutral-900"></div>
+      <div className="absolute -left-[5px] top-0 w-2 h-2 bg-amber-500 dark:bg-amber-600 rounded-full border-2 border-amber-50 dark:border-stone-800"></div>
 
       {/* Card */}
-      <div className="bg-white dark:bg-neutral-800 rounded-2xl p-5 shadow-sm border border-neutral-200 dark:border-neutral-700 hover:border-rose-200 dark:hover:border-rose-800 hover:shadow-md transition-all duration-200">
+      <div className="bg-amber-50/90 dark:bg-stone-800/90 rounded-2xl p-5 shadow-sm border border-amber-200/50 dark:border-stone-600 hover:border-amber-300/70 dark:hover:border-amber-700/50 hover:shadow-md transition-all duration-200">
         {/* Action buttons - shown on hover */}
         <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={(e) => onEdit(diary, e)}
-            className="w-8 h-8 flex items-center justify-center rounded-lg bg-neutral-100 dark:bg-neutral-700 text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600 transition-all"
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-amber-100/70 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300 hover:bg-amber-200/70 dark:hover:bg-amber-900/40 transition-all"
             title="编辑"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -55,7 +55,7 @@ export const DiaryCard: React.FC<DiaryCardProps> = ({
           </button>
           <button
             onClick={(e) => onDelete(diary, e)}
-            className="w-8 h-8 flex items-center justify-center rounded-lg bg-neutral-100 dark:bg-neutral-700 text-neutral-500 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-all"
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-amber-100/70 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-100/70 dark:hover:bg-rose-950/30 transition-all"
             title="删除"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -66,19 +66,19 @@ export const DiaryCard: React.FC<DiaryCardProps> = ({
 
         {/* Date */}
         <div className="flex justify-between items-start mb-3 pr-20">
-          <h3 className="font-semibold text-neutral-800 dark:text-neutral-100 text-base flex items-center gap-2">
+          <h3 className="font-semibold text-amber-900 dark:text-amber-100 text-base flex items-center gap-2">
             <span className="text-xl">📔</span>
             {dateStr}
           </h3>
           {tag && (
-            <span className="inline-flex items-center px-2.5 py-1 bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 text-xs font-medium rounded-full">
+            <span className="inline-flex items-center px-2.5 py-1 bg-amber-200/70 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-xs font-medium rounded-full">
               {tag}
             </span>
           )}
         </div>
 
         {/* Content preview */}
-        <p className="text-neutral-600 dark:text-neutral-400 text-sm leading-relaxed line-clamp-3 whitespace-pre-wrap">
+        <p className="text-amber-800/80 dark:text-amber-200/80 text-sm leading-relaxed line-clamp-3 whitespace-pre-wrap">
           {displayContent}
         </p>
       </div>

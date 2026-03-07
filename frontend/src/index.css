@@ -25,7 +25,7 @@
   .dark {
     color-scheme: dark;
     color: theme('colors.neutral.100');
-    background-color: theme('colors.neutral.900');
+    background-color: theme('colors.dark-primary');
   }
 
   * {
@@ -36,10 +36,36 @@
     margin: 0;
     min-width: 320px;
     min-height: 100vh;
+    /* 暗色模式下使用渐变背景 */
+  }
+
+  .dark body {
+    background: linear-gradient(135deg, #0f0a0c 0%, #1a1618 50%, #252022 100%);
   }
 
   #root {
     min-height: 100vh;
+  }
+
+  /* 选中文本样式 */
+  ::selection {
+    background-color: theme('colors.primary.200');
+    color: theme('colors.primary.900');
+  }
+
+  .dark ::selection {
+    background-color: theme('colors.primary.900');
+    color: theme('colors.primary.200');
+  }
+
+  /* 焦点样式 */
+  :focus-visible {
+    outline: 2px solid theme('colors.primary.400');
+    outline-offset: 2px;
+  }
+
+  .dark :focus-visible {
+    outline-color: theme('colors.primary.500');
   }
 }
 
@@ -53,6 +79,7 @@
 
   .scrollbar-elegant::-webkit-scrollbar {
     width: 6px;
+    height: 6px;
   }
 
   .scrollbar-elegant::-webkit-scrollbar-track {
@@ -68,15 +95,42 @@
     background-color: rgba(244, 63, 94, 0.5);
   }
 
+  /* 玻璃态效果 - 亮色模式 */
+  .glass-light {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+  }
+
+  /* 玻璃态效果 - 暗色模式 */
+  .glass-dark {
+    background: rgba(15, 10, 12, 0.7);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  /* 精美的渐变背景 */
+  .bg-gradient-rose-subtle {
+    background: linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%);
+  }
+
+  .dark .bg-gradient-rose-subtle {
+    background: linear-gradient(135deg, #1a1618 0%, #252022 100%);
+  }
+
   /* Markdown content styles - using Tailwind prose plugin */
   .markdown-content {
     @apply prose prose-sm max-w-none dark:prose-invert
-           prose-p:text-neutral-700 prose-p:dark:text-neutral-300
+           prose-p:text-neutral-700 prose-p:dark:text-neutral-200
            prose-headings:text-neutral-800 prose-headings:dark:text-neutral-100
-           prose-strong:text-neutral-900 prose-strong:dark:text-neutral-100 prose-strong:font-semibold
-           prose-code:text-rose-600 prose-code:dark:text-rose-400 prose-code:bg-neutral-100 prose-code:dark:bg-neutral-700 prose-code:px-1 prose-code:py-0.5 prose-code:rounded
-           prose-a:text-rose-500 prose-a:dark:text-rose-400
-           prose-pre:bg-neutral-100 prose-pre:dark:bg-neutral-700 prose-pre:rounded-lg;
+           prose-strong:text-neutral-900 prose-strong:dark:text-neutral-50 prose-strong:font-semibold
+           prose-code:text-rose-600 prose-code:dark:text-rose-400 prose-code:bg-rose-50 prose-code:dark:bg-rose-950/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
+           prose-a:text-rose-600 prose-a:dark:text-rose-400 prose-a:no-underline hover:prose-a:underline
+           prose-pre:bg-neutral-100 prose-pre:dark:bg-neutral-900 prose-pre:rounded-lg
+           prose-blockquote:border-l-rose-400 prose-blockquote:dark:border-l-rose-500
+           prose-hr:border-neutral-200 prose-hr:dark:border-neutral-700;
   }
 
   /* Nested list support */
@@ -89,5 +143,30 @@
 
   .markdown-content li {
     @apply my-1;
+  }
+
+  /* 表格样式 */
+  .markdown-content table {
+    @apply min-w-full divide-y divide-neutral-200 dark:divide-neutral-700;
+  }
+
+  .markdown-content thead {
+    @apply bg-neutral-50 dark:bg-neutral-800;
+  }
+
+  .markdown-content th {
+    @apply px-4 py-2 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-300 uppercase tracking-wider;
+  }
+
+  .markdown-content tbody {
+    @apply divide-y divide-neutral-200 dark:divide-neutral-700 bg-white dark:bg-neutral-900;
+  }
+
+  .markdown-content td {
+    @apply px-4 py-2 text-sm text-neutral-700 dark:text-neutral-200;
+  }
+
+  .markdown-content tr:hover {
+    @apply bg-neutral-50 dark:bg-neutral-800/50;
   }
 }

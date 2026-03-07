@@ -15,6 +15,7 @@ interface TraditionalChatPanelProps {
   onVoiceInputEnd?: () => void;
   placeholder?: string;
   characterId?: string;
+  characterName?: string;
 }
 
 export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
@@ -26,6 +27,7 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
   onVoiceInputEnd,
   placeholder = '聊聊天吧～',
   characterId,
+  characterName,
 }) => {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -158,7 +160,12 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
               {message.isUser ? (
                 <UserMessageBubble content={message.content} timestamp={message.timestamp} />
               ) : (
-                <AIMessageBubble content={message.content} timestamp={message.timestamp} characterId={characterId} />
+                <AIMessageBubble
+                  content={message.content}
+                  timestamp={message.timestamp}
+                  characterId={characterId}
+                  characterName={characterName}
+                />
               )}
             </div>
           ))}
@@ -181,63 +188,78 @@ export const TraditionalChatPanel: React.FC<TraditionalChatPanelProps> = ({
         </div>
       </div>
 
-      {/* Input Area */}
-      <div className="p-4 md:p-6 bg-gradient-to-t from-rose-50/80 to-transparent dark:from-dark-secondary/50 backdrop-blur-sm border-t border-rose-100/50 dark:border-neutral-800">
-        <div className="mx-auto max-w-2xl flex gap-3 items-end bg-white dark:bg-neutral-800 rounded-full px-5 py-3 shadow-md border border-neutral-200 dark:border-neutral-700 focus-within:border-rose-400 dark:focus-within:border-rose-500 focus-within:shadow-lg transition-all duration-200">
-          <textarea
-            ref={textareaRef}
-            className="flex-1 border-none outline-none text-base bg-transparent text-neutral-800 dark:text-neutral-100 resize-none min-h-[24px] max-h-[120px] leading-relaxed placeholder:text-neutral-400 disabled:opacity-60 disabled:cursor-not-allowed"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            disabled={loading || recordingState === 'recording'}
-            rows={1}
-          />
-          <div className="flex items-center gap-2">
-            {/* Voice input button */}
-            <button
-              className={clsx(
-                'w-10 h-10 rounded-full bg-emerald-400 hover:bg-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600 text-white flex items-center justify-center shrink-0 transition-all duration-200 text-lg disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]',
-                recordingState === 'recording' && 'bg-rose-400 hover:bg-rose-500 dark:bg-rose-500 dark:hover:bg-rose-600 w-auto px-3 rounded-2xl'
-              )}
-              onMouseDown={handleVoiceStart}
-              onMouseUp={handleVoiceEnd}
-              onMouseLeave={handleVoiceEnd}
-              onTouchStart={(e) => { e.preventDefault(); handleVoiceStart(); }}
-              onTouchEnd={(e) => { e.preventDefault(); handleVoiceEnd(); }}
-              disabled={loading || recordingState !== 'idle'}
-              title={
-                recordingState === 'recording' ? '松开结束录音' :
-                recordingState === 'processing' ? '识别中...' :
-                '按住说话'
-              }
-              type="button"
-            >
-              {recordingState === 'recording' ? (
-                <>
-                  <span>🎤</span>
-                  <span className="text-[13px] font-semibold tabular-nums ml-1">{formatTime(recordingTime)}</span>
-                </>
-              ) : recordingState === 'processing' ? (
-                <span className="animate-spin text-lg">⌛</span>
-              ) : (
-                <span>🎤</span>
-              )}
-            </button>
+      {/* Input Area - 精美的渐变背景和玻璃态效果 */}
+      <div className="p-4 md:p-6 bg-gradient-to-t from-rose-50/60 via-rose-50/30 to-transparent dark:from-night-secondary/60 dark:via-night-secondary/30 backdrop-blur-sm border-t border-rose-100/30 dark:border-neutral-800/50">
+        <div className="mx-auto max-w-2xl">
+          {/* 输入框容器 - 玻璃态效果 */}
+          <div className="relative group">
+            {/* 发光背景 */}
+            <div className="absolute -inset-0.5 bg-gradient-to-r from-rose-200 to-pink-200 dark:from-rose-950 dark:to-pink-950 rounded-full opacity-0 group-hover:opacity-20 transition-opacity duration-300 blur-md"></div>
 
-            {/* Send button */}
-            <button
-              className="w-10 h-10 rounded-full bg-gradient-to-r from-rose-400 to-rose-500 hover:from-rose-500 hover:to-rose-600 text-white flex items-center justify-center gap-1 shrink-0 text-sm font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98] shadow-sm hover:shadow-md"
-              onClick={handleSend}
-              disabled={!input.trim() || loading || recordingState !== 'idle'}
-              title="发送"
-              type="button"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
-                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
-              </svg>
-            </button>
+            <div className="relative flex gap-3 items-end bg-white/90 dark:bg-night-elevated/90 backdrop-blur-md rounded-full px-5 py-3 shadow-soft dark:shadow-dark-soft border-2 border-neutral-200/50 dark:border-neutral-700/50 focus-within:border-rose-300 dark:focus-within:border-rose-700 focus-within:shadow-rose-soft dark:focus-within:shadow-dark-glow transition-all duration-300">
+              <textarea
+                ref={textareaRef}
+                className="flex-1 border-none outline-none text-base bg-transparent text-neutral-700 dark:text-neutral-200 resize-none min-h-[24px] max-h-[120px] leading-relaxed placeholder:text-neutral-400 dark:placeholder:text-neutral-500 disabled:opacity-60 disabled:cursor-not-allowed"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={placeholder}
+                disabled={loading || recordingState === 'recording'}
+                rows={1}
+              />
+              <div className="flex items-center gap-2">
+                {/* Voice input button - 精美的渐变效果 */}
+                <button
+                  className={clsx(
+                    'w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 text-lg disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 shadow-sm hover:shadow-md',
+                    recordingState === 'recording'
+                      ? 'bg-gradient-to-r from-rose-400 to-pink-500 text-white px-4 rounded-2xl shadow-rose-soft hover:shadow-rose-soft-lg'
+                      : 'bg-gradient-to-r from-emerald-400 to-emerald-500 hover:from-emerald-500 hover:to-emerald-600 text-white'
+                  )}
+                  onMouseDown={handleVoiceStart}
+                  onMouseUp={handleVoiceEnd}
+                  onMouseLeave={handleVoiceEnd}
+                  onTouchStart={(e) => { e.preventDefault(); handleVoiceStart(); }}
+                  onTouchEnd={(e) => { e.preventDefault(); handleVoiceEnd(); }}
+                  disabled={loading || recordingState !== 'idle'}
+                  title={
+                    recordingState === 'recording' ? '松开结束录音' :
+                    recordingState === 'processing' ? '识别中...' :
+                    '按住说话'
+                  }
+                  type="button"
+                >
+                  {recordingState === 'recording' ? (
+                    <>
+                      <span>🎤</span>
+                      <span className="text-[13px] font-semibold tabular-nums ml-1">{formatTime(recordingTime)}</span>
+                    </>
+                  ) : recordingState === 'processing' ? (
+                    <span className="animate-spin text-lg">⌛</span>
+                  ) : (
+                    <span>🎤</span>
+                  )}
+                </button>
+
+                {/* Send button - 精美的渐变和发光效果 */}
+                <button
+                  className={clsx(
+                    'w-10 h-10 rounded-full flex items-center justify-center gap-1 shrink-0 text-sm font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95',
+                    input.trim() && !loading && recordingState === 'idle'
+                      ? 'bg-gradient-to-r from-rose-400 via-rose-500 to-pink-500 text-white shadow-rose-soft hover:shadow-rose-soft-lg hover:-translate-y-0.5'
+                      : 'bg-gradient-to-r from-neutral-300 to-neutral-400 dark:from-neutral-600 dark:to-neutral-700 text-neutral-500 dark:text-neutral-400'
+                  )}
+                  onClick={handleSend}
+                  disabled={!input.trim() || loading || recordingState !== 'idle'}
+                  title="发送"
+                  type="button"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
+                    <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

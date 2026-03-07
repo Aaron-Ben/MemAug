@@ -26,8 +26,8 @@ export const MonthGroup: React.FC<MonthGroupProps> = ({
         className={`
           flex items-center justify-between px-4 py-3 mb-3 rounded-2xl cursor-pointer transition-all duration-200 select-none
           ${group.expanded
-            ? 'bg-gradient-to-r from-rose-400 to-rose-500 text-white shadow-sm'
-            : 'bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 hover:border-rose-200 dark:hover:border-rose-800'
+            ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-sm'
+            : 'bg-amber-50/80 dark:bg-stone-800/80 text-amber-800 dark:text-amber-200 border border-amber-200/50 dark:border-stone-600 hover:border-amber-300/70 dark:hover:border-amber-700/50'
           }
         `}
         onClick={onToggle}
@@ -49,7 +49,7 @@ export const MonthGroup: React.FC<MonthGroupProps> = ({
         <div className="flex items-center gap-2">
           <span className={clsx(
             'text-sm',
-            group.expanded ? 'text-white/80' : 'text-neutral-400'
+            group.expanded ? 'text-white/80' : 'text-amber-500/70'
           )}>
             {group.count}篇日记
           </span>

@@ -1,6 +1,7 @@
 /** Character selector component for switching between characters */
 
 import React, { useState, useEffect } from 'react';
+import clsx from 'clsx';
 import { listAllCharacters } from '../../services/characterService';
 import type { UserCharacter } from '../../types/character';
 
@@ -45,19 +46,24 @@ export const CharacterSelector: React.FC<CharacterSelectorProps> = ({
   };
 
   return (
-    <div className={`relative ${className}`}>
+    <div className={clsx('relative', className)}>
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold cursor-pointer transition-all duration-300 border-2 shadow-lg hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0 bg-gradient-to-r from-pink-300 to-pink-500 border-pink-200 text-white shadow-pink-300/30 hover:from-pink-500 hover:to-pink-600 hover:shadow-pink-400/40"
-        aria-label="Select character"
+        className={clsx(
+          "flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold cursor-pointer transition-all duration-200 border-2 shadow-sm hover:shadow-md active:scale-95",
+          selectedCharacterId
+            ? "bg-gradient-to-r from-rose-400 via-rose-500 to-pink-500 border-rose-300 text-white shadow-rose-soft hover:shadow-rose-soft-lg"
+            : "bg-white/90 dark:bg-neutral-800/90 backdrop-blur-sm border-neutral-200 dark:border-neutral-600 text-neutral-700 dark:text-neutral-200 hover:border-rose-300 dark:hover:border-rose-700"
+        )}
+        aria-label="选择角色"
         aria-expanded={isOpen}
       >
         <span className="text-[13px] font-semibold">
-          {loading ? '加载中...' : selectedCharacter?.name || '选择角色'}
+          {loading ? '...' : selectedCharacter?.name || '选择角色'}
         </span>
         <svg
-          className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          className={clsx('w-3.5 h-3.5 transition-transform duration-200', isOpen && 'rotate-180')}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -72,10 +78,10 @@ export const CharacterSelector: React.FC<CharacterSelectorProps> = ({
             className="fixed inset-0 z-10"
             onClick={() => setIsOpen(false)}
           />
-          <div className="absolute left-0 mt-2 w-64 bg-white rounded-lg shadow-xl border border-pink-200 z-20">
-            <div className="p-2 max-h-96 overflow-y-auto">
+          <div className="absolute left-0 mt-2 w-56 bg-white/95 dark:bg-night-elevated/95 backdrop-blur-md rounded-xl shadow-xl dark:shadow-dark-soft-lg border border-neutral-200 dark:border-neutral-700 z-20 animate-fade-in">
+            <div className="p-2 max-h-80 overflow-y-auto scrollbar-elegant">
               {characters.length === 0 ? (
-                <div className="p-4 text-center text-gray-500 text-sm">
+                <div className="p-4 text-center text-neutral-500 dark:text-neutral-400 text-sm">
                   暂无角色
                 </div>
               ) : (
@@ -84,16 +90,14 @@ export const CharacterSelector: React.FC<CharacterSelectorProps> = ({
                     key={character.character_id}
                     type="button"
                     onClick={() => handleSelect(character)}
-                    className={`w-full text-left px-4 py-3 rounded-lg transition-colors ${
+                    className={clsx(
+                      "w-full text-left px-3 py-2.5 rounded-lg transition-all duration-200",
                       selectedCharacterId === character.character_id
-                        ? 'bg-pink-100 text-pink-700'
-                        : 'hover:bg-pink-50 text-gray-700'
-                    }`}
+                        ? "bg-gradient-to-r from-rose-100 to-pink-100 dark:from-rose-900/50 dark:to-pink-900/50 text-rose-700 dark:text-rose-200 font-semibold"
+                        : "text-neutral-700 dark:text-neutral-200 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                    )}
                   >
-                    <div className="font-medium">{character.name}</div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {character.character_id.slice(0, 8)}...
-                    </div>
+                    <div className="font-medium text-sm">{character.name}</div>
                   </button>
                 ))
               )}

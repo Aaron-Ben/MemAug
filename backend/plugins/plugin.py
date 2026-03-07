@@ -479,6 +479,7 @@ tool_name:「始」{cmd_name}「末」,
 1. 所有参数使用「始」和「末」包裹
 2. 参数之间用逗号分隔
 3. 工具调用用 <<<[TOOL_REQUEST]>>> 包裹
+4. 对于需要 character_id 的参数（如 maid），请使用角色信息中的 character_id 值
 """
                     descriptions[f'VCP{cmd_name}'] = description
 

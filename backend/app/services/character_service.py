@@ -61,8 +61,12 @@ class CharacterService:
         character_dir = self.characters_dir / character_id
         character_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create prompt.md with original name as heading
-        prompt_content = f"# {name.strip()}\n\n{prompt.strip()}"
+        # Create prompt.md with character info
+        prompt_content = f"""## 角色信息
+- character_id: {character_id}
+- 角色名称: {name.strip()}
+
+{prompt.strip()}"""
         prompt_file = character_dir / "prompt.md"
         prompt_file.write_text(prompt_content, encoding='utf-8')
 
@@ -194,17 +198,32 @@ class CharacterService:
             return False
 
         try:
-            # Get character name from metadata
+            # Get character info from metadata
             metadata = self._load_metadata(character_dir)
 
-            # Preserve the name heading, replace the rest
+            # Preserve the character info block, replace the prompt content
             current_content = prompt_file.read_text(encoding='utf-8')
             lines = current_content.split('\n')
-            name_heading = lines[0] if lines and lines[0].startswith('# ') else None
 
-            new_content = prompt.strip()
-            if name_heading:
-                new_content = f"{name_heading}\n\n{new_content}"
+            # Find the end of character info block (after the role name line)
+            info_block_end = -1
+            for i, line in enumerate(lines):
+                if i >= 3 and line.strip() and not line.startswith('-'):
+                    info_block_end = i
+                    break
+
+            if info_block_end == -1:
+                # If pattern not found, prepend character info
+                character_id = metadata.get("character_id", character_id) if metadata else character_id
+                name = metadata.get("name", "") if metadata else ""
+                new_content = f"""## 角色信息
+- character_id: {character_id}
+- 角色名称: {name}
+
+{prompt.strip()}"""
+            else:
+                # Replace content after character info block
+                new_content = '\n'.join(lines[:info_block_end]) + '\n\n' + prompt.strip()
 
             prompt_file.write_text(new_content, encoding='utf-8')
 
@@ -220,7 +239,7 @@ class CharacterService:
             return False
 
     def get_prompt(self, character_id: str) -> Optional[str]:
-        """Get a character's prompt (without the name heading)."""
+        """Get a character's prompt."""
         character_dir = self.characters_dir / character_id
         prompt_file = character_dir / "prompt.md"
 
@@ -229,10 +248,6 @@ class CharacterService:
 
         try:
             content = prompt_file.read_text(encoding='utf-8')
-            # Remove name heading if present
-            lines = content.split('\n')
-            if lines and lines[0].startswith('# '):
-                content = '\n'.join(lines[1:]).lstrip()
 
             # Replace {{daily}} placeholder with daily_edit.txt content
             if '{{daily}}' in content:
