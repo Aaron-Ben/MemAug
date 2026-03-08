@@ -98,7 +98,9 @@ class TimeExpressionParser:
             List of unique TimeRange objects found in the text
         """
         text_preview = text[:100] + ('...' if len(text) > 100 else '')
-        logger.info(f"[TimeParser] Parsing text for all time expressions: \"{text_preview}\"")
+        logger.info(f"[TimeParser] ========================================")
+        logger.info(f"[TimeParser] 🕐 时间解析器被调用!")
+        logger.info(f"[TimeParser] 解析文本: \"{text_preview}\"")
 
         now = self._get_now()
         remaining_text = text
@@ -149,13 +151,17 @@ class TimeExpressionParser:
             if len(unique_ranges) < len(results):
                 logger.info(f"[TimeParser] Deduplicated time ranges: {len(results)} → {len(unique_ranges)}")
 
-            logger.info(f"[TimeParser] Found {len(unique_ranges)} unique time expressions.")
+            logger.info(f"[TimeParser] 找到 {len(unique_ranges)} 个唯一时间表达式")
             for i, r in enumerate(unique_ranges, 1):
-                logger.info(f"  [{i}] Range: {r.start.isoformat()} to {r.end.isoformat()}")
+                logger.info(f"  [{i}] 时间范围: {r.start.strftime('%Y-%m-%d %H:%M:%S')} 到 {r.end.strftime('%Y-%m-%d %H:%M:%S')}")
+
+            logger.info(f"[TimeParser] 时间解析完成，返回 {len(unique_ranges)} 个时间范围")
+            logger.info(f"[TimeParser] ========================================")
 
             return unique_ranges
         else:
-            logger.info("[TimeParser] No time expression found in text")
+            logger.info("[TimeParser] 未在文本中找到时间表达式")
+            logger.info(f"[TimeParser] ========================================")
             return []
 
     def _deduplicate_ranges(self, ranges: List[TimeRange]) -> List[TimeRange]:

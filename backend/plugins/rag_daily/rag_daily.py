@@ -47,7 +47,8 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
-dailyNoteRootPath = Path(__file__).parent / "daily_notes"
+# 日记文件根路径：从项目根目录的 data/daily/ 读取
+dailyNoteRootPath = Path(__file__).parent.parent.parent.parent / "data" / "daily"
 
 
 # ==================== 辅助函数 ====================
@@ -951,8 +952,6 @@ class RAGDiaryPlugin:
         if context_diary_prefixes is None:
             context_diary_prefixes = set()
 
-        logger.info(f"[RAGDiary] 🔎 开始执行检索: db_name={db_name}, k={k}, use_time={use_time}, use_rerank={use_rerank}, tag_weight={tag_weight}")
-
         # 1. 解析修饰符
         use_time = False
         use_rerank = False
@@ -990,9 +989,12 @@ class RAGDiaryPlugin:
             k_for_search = int(k * rerank_multiplier) + dedup_buffer
 
         logger.debug(f"[RAGDiary] 📊 K值计算: base_k={base_k:.1f}, multiplier={k_multiplier:.2f}, final_k={k}, k_for_search={k_for_search}")
+        logger.info(f"[RAGDiary] 🔎 开始执行检索: db_name={db_name}, k={k}, use_time={use_time}, use_rerank={use_rerank}, tag_weight={tag_weight}")
 
         # 2. 原子级复刻 LightMemo 流程：利用 applyTagBoost 预先感应语义 Tag
         core_tags: List[str] = []
+
+        logger.info(f"[RAGDiary] 🏷️ TagBoost 状态: tag_weight={tag_weight}, 是否启用={'是' if tag_weight is not None and tag_weight > 0 else '否'}")
 
         if tag_weight is not None and tag_weight > 0 and self.vector_db_manager:
             try:
@@ -1024,25 +1026,45 @@ class RAGDiaryPlugin:
 
             logger.info(f"[RAGDiaryPlugin] Time-Aware Balanced Mode: Total K={k} (Semantic={k_semantic}, Time={k_time})")
 
-            # 1. 语义路召回
-            rag_results = []
-            if self.vector_db_manager:
+            # 0. 先收集时间范围内的文件路径（供双路使用）
+            time_file_paths = []
+            for time_range in time_ranges:
                 try:
-                    logger.info(f"[RAGDiary] 📊 语义路召回: 搜索 {k_for_search} 条...")
-                    rag_results = await self.vector_db_manager.search(
-                        db_name,
-                        query_vector,
-                        k_for_search,
-                        tag_weight if tag_weight else 0.0,
-                        core_tags if core_tags else None
-                    )
-                    logger.info(f"[RAGDiary] ✅ 语义路召回完成: 获取 {len(rag_results)} 条结果")
-                    rag_results = self._filter_context_duplicates(rag_results, context_diary_prefixes)
-                    rag_results = rag_results[:k_semantic]
-                    # 添加 source 标识
-                    for r in rag_results:
-                        r.__dict__['source'] = 'rag'
-                    logger.info(f"[RAGDiary] 📊 语义路去重后: {len(rag_results)} 条")
+                    files = await self._get_time_range_file_paths(db_name, time_range)
+                    time_file_paths.extend(files)
+                except Exception as e:
+                    logger.warning(f"[RAGDiaryPlugin] Time range file paths failed: {e}")
+
+            # 去重文件路径
+            time_file_paths = list(set(time_file_paths))
+
+            if not time_file_paths:
+                logger.warning(f"[RAGDiaryPlugin] No files found in time ranges, skipping dual-path retrieval")
+                return []
+
+            logger.info(f"[RAGDiary] 📅 时间范围限定: {len(time_file_paths)} 个文件")
+
+            # 1. 语义路召回（限定在时间范围内）
+            rag_results = []
+            if time_file_paths and self.vector_db_manager:
+                try:
+                    logger.info(f"[RAGDiary] 📊 语义路召回: 在时间范围内搜索 {k_for_search} 条...")
+                    # 获取时间范围内的所有分块
+                    time_chunks = await self.vector_db_manager.get_chunks_by_file_paths(time_file_paths)
+
+                    # 计算每个分块与查询向量的相似度
+                    for chunk in time_chunks:
+                        vector = getattr(chunk, 'vector', None)
+                        if vector:
+                            chunk.score = self.cosine_similarity(query_vector, vector)
+                        else:
+                            chunk.score = 0.0
+                        chunk.__dict__['source'] = 'rag'
+
+                    # 按相似度排序并取前 k_semantic 个
+                    time_chunks.sort(key=lambda c: c.score, reverse=True)
+                    rag_results = time_chunks[:k_semantic]
+                    logger.info(f"[RAGDiary] ✅ 语义路召回完成: 从 {len(time_chunks)} 个分块中选出 {len(rag_results)} 条")
 
                     # 显示语义路召回的文件路径
                     for i, r in enumerate(rag_results[:10]):
@@ -1055,27 +1077,16 @@ class RAGDiaryPlugin:
                 except Exception as e:
                     logger.warning(f"[RAGDiaryPlugin] Semantic search failed: {e}")
 
-            # 2. 时间路召回 (带相关性排序)
-            # 收集所有时间范围的文件路径
-            time_file_paths = []
-            for time_range in time_ranges:
-                try:
-                    files = await self._get_time_range_file_paths(db_name, time_range)
-                    time_file_paths.extend(files)
-                except Exception as e:
-                    logger.warning(f"[RAGDiaryPlugin] Time range file paths failed: {e}")
-
-            # 去重文件路径
-            time_file_paths = list(set(time_file_paths))
-
+            # 2. 时间路召回 (带相关性排序，补充语义路未覆盖的内容)
             time_results = []
             if time_file_paths and self.vector_db_manager:
                 try:
-                    logger.info(f"[RAGDiary] 📅 时间路召回: 找到 {len(time_file_paths)} 个文件")
-                    # 从数据库获取这些文件的所有分块及其向量
+                    logger.info(f"[RAGDiary] 📅 时间路召回: 从剩余分块中补充 {k_time} 条...")
+                    # 获取时间范围内的所有分块（语义路已获取过，这里重新获取或复用）
+                    # 为了简单起见，重新获取
                     time_chunks = await self.vector_db_manager.get_chunks_by_file_paths(time_file_paths)
 
-                    # 计算每个分块与当前查询向量的相似度
+                    # 计算相似度
                     for chunk in time_chunks:
                         vector = getattr(chunk, 'vector', None)
                         if vector:
@@ -1084,10 +1095,15 @@ class RAGDiaryPlugin:
                             chunk.score = 0.0
                         chunk.__dict__['source'] = 'time'
 
-                    # 按相似度排序并取前 k_time 个
+                    # 按相似度排序
                     time_chunks.sort(key=lambda c: c.score, reverse=True)
-                    time_results = time_chunks[:k_time]
-                    logger.info(f"[RAGDiaryPlugin] Time path: Found {len(time_chunks)} chunks in range, selected top {len(time_results)} by relevance.")
+
+                    # 过滤掉语义路已选中的分块
+                    rag_result_keys = {r.text.strip() for r in rag_results if hasattr(r, 'text')}
+                    time_chunks_filtered = [c for c in time_chunks if c.text.strip() not in rag_result_keys]
+
+                    time_results = time_chunks_filtered[:k_time]
+                    logger.info(f"[RAGDiaryPlugin] Time path: Found {len(time_chunks)} chunks, selected {len(time_results)} not in semantic path.")
                 except Exception as e:
                     logger.warning(f"[RAGDiaryPlugin] Time chunks processing failed: {e}")
 
@@ -1345,17 +1361,24 @@ class RAGDiaryPlugin:
         Returns:
             相对文件路径列表 (dbName/filename 格式)
         """
+        logger.info(f"[RAGDiary] 🔍 _get_time_range_file_paths 被调用")
+        logger.info(f"[RAGDiary] 角色: {db_name}")
+        logger.info(f"[RAGDiary] 时间范围: {time_range.start.strftime('%Y-%m-%d %H:%M:%S')} 到 {time_range.end.strftime('%Y-%m-%d %H:%M:%S')}")
+
         file_paths_in_range: List[str] = []
 
         # 检查时间范围
         if not time_range or not time_range.start or not time_range.end:
+            logger.warning(f"[RAGDiary] ⚠️ 时间范围无效，返回空列表")
             return file_paths_in_range
 
         try:
             # 构建角色日记目录路径
             character_dir_path = dailyNoteRootPath / db_name
+            logger.info(f"[RAGDiary] 📂 检查目录: {character_dir_path}")
 
             if not character_dir_path.exists():
+                logger.warning(f"[RAGDiary] ⚠️ 目录不存在: {character_dir_path}")
                 return file_paths_in_range
 
             # 读取目录文件列表
@@ -1364,6 +1387,7 @@ class RAGDiaryPlugin:
                 f for f in files
                 if f.lower().endswith(('.txt', '.md'))
             ]
+            logger.info(f"[RAGDiary] 📄 目录中有 {len(diary_files)} 个日记文件")
 
             # 日期正则：匹配 [2026.03.01] 或 [2026-03-01] 格式
             date_pattern = re.compile(r'^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?')
@@ -1411,7 +1435,16 @@ class RAGDiaryPlugin:
                     pass
 
         except Exception as dir_error:
-            logger.error(f"[RAGDiaryPlugin] Failed to read directory {db_name}: {dir_error}")
+            logger.error(f"[RAGDiaryPlugin] ❌ 读取目录失败 {db_name}: {dir_error}")
+            import traceback
+            logger.error(f"[RAGDiaryPlugin] 详细错误:\n{traceback.format_exc()}")
+
+        logger.info(f"[RAGDiary] 📁 找到 {len(file_paths_in_range)} 个匹配的日记文件:")
+        if file_paths_in_range:
+            for i, path in enumerate(file_paths_in_range, 1):
+                logger.info(f"  [{i}] {path}")
+        else:
+            logger.info(f"  (无)")
 
         return file_paths_in_range
 
@@ -1924,6 +1957,8 @@ class RAGDiaryPlugin:
 
         result = f'<!-- RAG_BLOCK_START {metadata_string} -->{inner_content}<!-- RAG_BLOCK_END -->'
         logger.info(f"[RAGDiary] ✅ 格式化完成，结果长度: {len(result)} 字符")
+        logger.info(f"[RAGDiary] 📄 最终注入格式:\n{result}")
+        logger.info(f"[RAGDiary] ═══════════════════════════════════════════════════════════")
         return result
 
     def format_combined_time_aware_results(
@@ -2012,7 +2047,13 @@ class RAGDiaryPlugin:
         # 转义元数据中的 -->
         metadata_string = json.dumps(metadata, ensure_ascii=False).replace('-->', '--\\>')
 
-        return f'<!-- _RAG_BLOCK_START {metadata_string} -->{inner_content}<!-- _RAG_BLOCK_END -->'
+        result = f'<!-- _RAG_BLOCK_START {metadata_string} -->{inner_content}<!-- _RAG_BLOCK_END -->'
+
+        logger.info(f"[RAGDiary] ✅ 格式化完成，结果长度: {len(result)} 字符")
+        logger.info(f"[RAGDiary] 📄 最终注入格式:\n{result}")
+        logger.info(f"[RAGDiary] ═══════════════════════════════════════════════════════════")
+
+        return result
 
     def _clean_results_for_broadcast(self, results: List[Dict]) -> List[Dict]:
         """

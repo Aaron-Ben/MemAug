@@ -878,10 +878,17 @@ class VectorIndex:
         # 应用 Tag 增强（如果启用）
         search_vec = vector
         tag_info = None
+
+        logging.info(f"[VectorIndex] 🏷️ TagBoost 参数: tag_boost={tag_boost:.3f}, core_tags={len(core_tags) if core_tags else 0}, 启用={'是' if tag_boost > 0 and core_tags else '否'}")
+
         if tag_boost > 0 and core_tags:
+            logging.info(f"[VectorIndex] ✅ TagBoost 已启用，开始增强向量...")
             boost_result = self.apply_tag_boost(vector, tag_boost, core_tags, core_boost_factor=1.33)
             search_vec = boost_result.vector
             tag_info = boost_result.info
+            logging.info(f"[VectorIndex] ✅ TagBoost 完成: boost_factor={tag_info.boost_factor:.3f}, matched_tags={len(tag_info.matched_tags)}")
+        else:
+            logging.info(f"[VectorIndex] ⏭️ TagBoost 未启用，使用原始向量")
 
         # 维度检查
         if len(search_vec) != self.config.dimension:
@@ -951,7 +958,11 @@ class VectorIndex:
         # 应用 Tag 增强（如果启用）
         search_vec = vector
         tag_info = None
+
+        logging.info(f"[VectorIndex] 🏷️ TagBoost 参数: tag_boost={tag_boost:.3f}, core_tags={len(core_tags) if core_tags else 0}, 启用={'是' if tag_boost > 0 and core_tags else '否'}")
+
         if tag_boost > 0 and core_tags:
+            logging.info(f"[VectorIndex] ✅ TagBoost 已启用，开始增强向量...")
             boost_result = self.apply_tag_boost(vector, tag_boost, core_tags, core_boost_factor=1.33)
             search_vec = boost_result.vector
             tag_info = boost_result.info
