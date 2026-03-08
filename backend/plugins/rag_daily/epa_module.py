@@ -138,8 +138,10 @@ class EPAModule:
                 })
             
             if len(processed_tags) < 8:
-                logger.warning('[EPA] ⚠️ Not enough tags (need at least 8)')
+                logger.warning(f'[EPA] ⚠️ Not enough tags (need at least 8, got {len(processed_tags)})')
                 return False
+
+            logger.info(f"[EPA] 📊 Loaded {len(processed_tags)} tags for basis computation")
 
             # 1. 鲁棒 K-Means 聚类 (提取加权质心)
             cluster_count = min(len(processed_tags), self.config['cluster_count'])
@@ -493,7 +495,10 @@ class EPAModule:
             Dictionary with projections, probabilities, entropy, dominant_axes
         """
         if not self.initialized or self.ortho_basis is None:
+            logger.debug("[EPA] ⚠️ Not initialized, returning empty result")
             return self._empty_result()
+
+        logger.debug(f"[EPA] 📐 Projecting vector (dim={len(vector)}, K={len(self.ortho_basis)})")
 
         vec = vector.astype(np.float32) if vector.dtype != np.float32 else vector
         dim = len(vec)
@@ -548,6 +553,10 @@ class EPAModule:
                 })
 
         dominant_axes.sort(key=lambda x: x["energy"], reverse=True)
+
+        logger.info(f"[EPA] ✅ Projection complete: entropy={normalized_entropy:.3f}, dominant_axes={len(dominant_axes)}")
+        if dominant_axes:
+            logger.debug(f"[EPA]   Top axes: {[ax['label'] for ax in dominant_axes[:3]]}")
 
         return {
             "projections": projections,

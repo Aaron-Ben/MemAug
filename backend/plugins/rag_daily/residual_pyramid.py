@@ -106,6 +106,8 @@ class ResidualPyramid:
         Returns:
             Analysis results dictionary with levels, energy, and features
         """
+        logger.info(f"[ResidualPyramid] 🔺 Starting analysis (max_levels={self.config['max_levels']}, top_k={self.config['top_k']})")
+
         self.levels.clear()
         self.total_explained_energy = 0.0
 
@@ -218,8 +220,12 @@ class ResidualPyramid:
                 )
                 break
 
+            logger.info(f"[ResidualPyramid] 🔻 Level {level}: {len(tag_info_list)} tags, energy_explained={energy_explained_by_level:.2%}")
+
         self.final_residual = current_residual
         self.features = self._extract_pyramid_features()
+
+        logger.info(f"[ResidualPyramid] ✅ Analysis complete: {len(self.levels)} levels, total_energy={self.total_explained_energy:.2%}")
 
         return self._compile_results()
 

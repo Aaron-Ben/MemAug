@@ -18,17 +18,30 @@ import json
 import math
 import os
 import re
+import sys
 import aiofiles
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Set
+from typing import Dict, Any, List, Optional, Set, TYPE_CHECKING
 from datetime import datetime
 import logging
 
-from .time_parser import TimeExpressionParser, TimeRange
-from .context_vector_manager import ContextVectorManager
+# 动态导入（支持直接加载和包导入两种方式）
+try:
+    from .time_parser import TimeExpressionParser, TimeRange
+    from .context_vector_manager import ContextVectorManager
+except ImportError:
+    # 直接加载时使用绝对路径导入
+    plugin_dir = Path(__file__).parent
+    sys.path.insert(0, str(plugin_dir))
+    from time_parser import TimeExpressionParser, TimeRange
+    from context_vector_manager import ContextVectorManager
 
 from app.services.embedding import EmbeddingService
+
+# 类型提示导入（避免运行时循环导入）
+if TYPE_CHECKING:
+    from app.vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +50,28 @@ DEFAULT_TIMEZONE = "Asia/Shanghai"
 dailyNoteRootPath = Path(__file__).parent / "daily_notes"
 
 
+# ==================== 辅助函数 ====================
+
+def _get_attr(obj, key, default=''):
+    """安全获取对象属性（支持 dataclass 和 dict）"""
+    if hasattr(obj, key):
+        value = getattr(obj, key)
+        return value if value is not None else default
+    elif isinstance(obj, dict):
+        return obj.get(key, default)
+    return default
+
+
 class RAGDiaryPlugin:
     def __init__(self):
         self.name = 'RAGDiaryPlugin'
-        self.vector_db_manager: Optional[Any] = None
+        self.vector_db_manager: Optional['VectorIndex'] = None
         self.rag_config: Dict[str, Any] = {}
         self.rerank_config: Dict[str, Any] = {}
         self.push_vcp_info: Optional[callable] = None
         self.time_parser = TimeExpressionParser('zh-CN', DEFAULT_TIMEZONE)
-        self.context_vector_manager = ContextVectorManager(self)
+        # 修复: ContextVectorManager 不需要插件实例参数
+        self.context_vector_manager = ContextVectorManager()
         self.is_initialized = False
         self.context_vector_allow_api: bool = False
 
@@ -346,21 +372,21 @@ class RAGDiaryPlugin:
                 k_base = max(k_base, 4)
 
         # ==================== 2. 获取 EPA 指标 (L, R) ====================
+        # 使用 vector_db_manager.get_epa_analysis() 统一接口
         L = 0.5  # 逻辑深度
         R = 0.0  # 共振
 
-        if hasattr(self.vector_db_manager, 'epa') and self.vector_db_manager.epa:
-            query_np = np.array(query_vector, dtype=np.float32)
-            epa_result = self.vector_db_manager.epa.project(query_np)
-            L = epa_result.get('logic_depth', 0.5)
-            resonance_result = self.vector_db_manager.epa.detect_cross_domain_resonance(query_np)
-            R = resonance_result.get('resonance', 0.0)
+        if hasattr(self.vector_db_manager, 'get_epa_analysis'):
+            epa_analysis = self.vector_db_manager.get_epa_analysis(query_vector)
+            L = epa_analysis.get('logic_depth', 0.5)
+            R = epa_analysis.get('resonance', 0.0)
 
         # ==================== 3. 获取语义宽度 (S) ====================
         S = 1.0
         if hasattr(self, 'context_vector_manager'):
             query_np = np.array(query_vector, dtype=np.float32)
             S = self.context_vector_manager.compute_semantic_width(query_np)
+            logger.debug(f"[RAGDiary] 📏 Semantic width S={S:.3f}")
 
         # ==================== 4. 计算动态 Beta (TagWeight) ====================
         # β = σ(L · log(1 + R) - S · noise_penalty)
@@ -519,6 +545,7 @@ class RAGDiaryPlugin:
 
     # ==================== Phase 3: RAG Core Flow ====================
 
+    # 消息的预处理
     async def process_messages(
         self,
         messages: List[Dict[str, Any]],
@@ -527,7 +554,6 @@ class RAGDiaryPlugin:
         """
         处理消息并执行 RAG 检索
 
-        按照 JavaScript 原版逻辑实现：
         - 更新上下文向量映射
         - 识别需要处理的 system 消息
         - 提取最后一个用户消息和 AI 消息
@@ -555,7 +581,8 @@ class RAGDiaryPlugin:
             # ✅ 新增：更新上下文向量映射（为后续衰减聚合做准备）
             # 🌟 修复：传递 allowApi 配置，控制是否允许向量化历史消息
             if hasattr(self, 'context_vector_manager'):
-                await self.context_vector_manager.update_context(messages, {'allowApi': self.context_vector_allow_api})
+                logger.debug("[RAGDiary] 📥 Calling update_context...")
+                self.context_vector_manager.update_context(messages, {'allowApi': self.context_vector_allow_api})
 
             logger.info("[RAGDiaryPlugin] Processing messages for RAG...")
 
@@ -725,7 +752,6 @@ class RAGDiaryPlugin:
             logger.error(f'[RAGDiaryPlugin] Traceback: {traceback.format_exc()}')
 
             # 返回原始消息，移除占位符以避免二次错误
-            import copy
             safe_messages = copy.deepcopy(messages)
             for msg in safe_messages:
                 if msg.get('role') == 'system' and isinstance(msg.get('content'), str):
@@ -755,7 +781,6 @@ class RAGDiaryPlugin:
         """
         处理单个系统消息中的 RAG 占位符
 
-        按照 JavaScript 原版逻辑实现：
         - 处理 [[...]] 中的 RAG 请求
         - 处理 {{...日记本}} 直接引入模式
         - 使用 processed_diaries 防止循环引用
@@ -792,11 +817,16 @@ class RAGDiaryPlugin:
         rag_declarations = re.findall(r'\[\[(.*?)日记本(.*?)\]\]', content)
         direct_diaries_declarations = re.findall(r'\{\{(.*?)日记本\}\}', content)
 
+        logger.info(f"[RAGDiary] 🔍 识别到 {len(rag_declarations)} 个 RAG 占位符, {len(direct_diaries_declarations)} 个直接引入占位符")
+        for db_name, modifiers in rag_declarations:
+            logger.info(f"[RAGDiary]   - RAG占位符: [[{db_name}日记本{modifiers}]]")
+
         processing_promises = []
 
         # --- 1. 处理 [[...]] 中的 RAG 请求 ---
         for db_name, modifiers in rag_declarations:
             placeholder = f'[[{db_name}日记本{modifiers}]]'
+            logger.info(f"[RAGDiary] 🚀 开始处理 RAG 占位符: {placeholder}")
 
             if db_name in processed_diaries:
                 logger.warning(f"[RAGDiaryPlugin] Detected circular reference to \"{db_name}\" in [[...]]. Skipping.")
@@ -861,8 +891,10 @@ class RAGDiaryPlugin:
 
         # --- 3. 执行所有任务并替换内容 ---
         if processing_promises:
+            logger.info(f"[RAGDiary] ⏳ 开始执行 {len(processing_promises)} 个处理任务...")
             results = await asyncio.gather(*processing_promises, return_exceptions=True)
 
+            logger.info(f"[RAGDiary] ✅ 处理任务完成，开始替换占位符...")
             for result in results:
                 if isinstance(result, Exception):
                     logger.error(f"[RAGDiaryPlugin] Task failed: {result}")
@@ -870,6 +902,7 @@ class RAGDiaryPlugin:
 
                 if isinstance(result, tuple) and len(result) == 2:
                     placeholder, replacement_content = result
+                    logger.info(f"[RAGDiary]   替换占位符: {placeholder[:50]}...")
                     processed_content = processed_content.replace(placeholder, replacement_content)
 
         return processed_content
@@ -945,7 +978,7 @@ class RAGDiaryPlugin:
         # 使用 K 值乘数调整动态 K
         k_multiplier = self._extract_k_multiplier(modifiers)
         base_k = custom_k if custom_k is not None else dynamic_k
-        k = max(1, math.round(base_k * k_multiplier))
+        k = max(1, round(base_k * k_multiplier))
 
         # 去重缓冲 (V4.1: 补偿去重损失)
         dedup_buffer = len(context_diary_prefixes)
@@ -962,8 +995,8 @@ class RAGDiaryPlugin:
                 query_np = np.array(query_vector, dtype=np.float32)
                 tag_boost_result = self.vector_db_manager.apply_tag_boost(
                     vector=query_np,
-                    tag_weight=tag_weight,
-                    tags=None
+                    tag_boost=tag_weight,
+                    core_tags=core_tags if core_tags else []
                 )
                 if tag_boost_result and tag_boost_result.info and 'matched_tags' in tag_boost_result.info:
                     raw_tags = tag_boost_result.info['matched_tags']
@@ -977,6 +1010,7 @@ class RAGDiaryPlugin:
 
         # 3. 执行检索
         final_results = []
+        logger.info(f"[RAGDiary] 🔎 开始执行检索: db_name={db_name}, k={k}, use_time={use_time}, use_rerank={use_rerank}, tag_weight={tag_weight}")
 
         if use_time and time_ranges and allow_time_and_group:
             # --- 平衡双路召回 (Balanced Dual-Path Retrieval) ---
@@ -990,6 +1024,7 @@ class RAGDiaryPlugin:
             rag_results = []
             if self.vector_db_manager:
                 try:
+                    logger.info(f"[RAGDiary] 📊 语义路召回: 搜索 {k_for_search} 条...")
                     rag_results = await self.vector_db_manager.search(
                         db_name,
                         query_vector,
@@ -997,15 +1032,17 @@ class RAGDiaryPlugin:
                         tag_weight if tag_weight else 0.0,
                         core_tags if core_tags else None
                     )
+                    logger.info(f"[RAGDiary] ✅ 语义路召回完成: 获取 {len(rag_results)} 条结果")
                     rag_results = self._filter_context_duplicates(rag_results, context_diary_prefixes)
                     rag_results = rag_results[:k_semantic]
                     # 添加 source 标识
                     for r in rag_results:
                         r.__dict__['source'] = 'rag'
+                    logger.info(f"[RAGDiary] 📊 语义路去重后: {len(rag_results)} 条")
                 except Exception as e:
                     logger.warning(f"[RAGDiaryPlugin] Semantic search failed: {e}")
 
-            # 2. 时间路召回 (带相关性排序) - 按照 JavaScript 版本逻辑
+            # 2. 时间路召回 (带相关性排序)
             # 收集所有时间范围的文件路径
             time_file_paths = []
             for time_range in time_ranges:
@@ -1021,12 +1058,13 @@ class RAGDiaryPlugin:
             time_results = []
             if time_file_paths and self.vector_db_manager:
                 try:
+                    logger.info(f"[RAGDiary] 📅 时间路召回: 找到 {len(time_file_paths)} 个文件")
                     # 从数据库获取这些文件的所有分块及其向量
                     time_chunks = await self.vector_db_manager.get_chunks_by_file_paths(time_file_paths)
 
                     # 计算每个分块与当前查询向量的相似度
                     for chunk in time_chunks:
-                        vector = chunk.__dict__.get('vector')
+                        vector = getattr(chunk, 'vector', None)
                         if vector:
                             chunk.score = self.cosine_similarity(query_vector, vector)
                         else:
@@ -1056,6 +1094,7 @@ class RAGDiaryPlugin:
                     all_entries[key] = r
 
             final_results = list(all_entries.values())
+            logger.info(f"[RAGDiary] 🎯 双路合并结果: {len(final_results)} 条 (语义: {len(rag_results)}, 时间: {len(time_results)})")
 
             # 如果启用了 Rerank，对合并后的结果进行最终重排
             if use_rerank and final_results:
@@ -1093,6 +1132,7 @@ class RAGDiaryPlugin:
             logger.info(f"[RAGDiaryPlugin] Shotgun Query: Executing {len(search_vectors)} parallel searches with decay weights")
 
             # 并行搜索
+            logger.info(f"[RAGDiary] 🔫 霰弹枪模式: {len(search_vectors)} 个向量并行搜索...")
             search_tasks = []
             for sv in search_vectors:
                 sv_k = k_for_search if sv['type'] == 'current' else max(2, k_for_search // 2)
@@ -1123,16 +1163,16 @@ class RAGDiaryPlugin:
             for arr in results_arrays:
                 flattened_results.extend(arr)
 
+            logger.info(f"[RAGDiary] ✅ 霰弹枪搜索完成: 原始 {len(flattened_results)} 条结果")
+
             # 上下文去重
             flattened_results = self._filter_context_duplicates(flattened_results, context_diary_prefixes)
 
             # SVD 智能去重
-            if flattened_results and hasattr(self.vector_db_manager, 'result_deduplicator'):
+            # 使用 vector_db_manager.deduplicate_results() 统一接口
+            if flattened_results and hasattr(self.vector_db_manager, 'deduplicate_results'):
                 try:
-                    deduplicator = self.vector_db_manager.result_deduplicator
-                    if deduplicator:
-                        query_np = np.array(query_vector, dtype=np.float32)
-                        flattened_results = await deduplicator.deduplicate(flattened_results, query_np)
+                    flattened_results = await self.vector_db_manager.deduplicate_results(flattened_results, query_vector)
                 except Exception as e:
                     logger.warning(f"[RAGDiaryPlugin] Deduplication failed: {e}")
 
@@ -1149,6 +1189,8 @@ class RAGDiaryPlugin:
             # 添加 source 标识
             for r in final_results:
                 r.__dict__['source'] = 'rag'
+
+        logger.info(f"[RAGDiary] 📋 最终结果: {len(final_results)} 条，准备格式化...")
 
         # 4. 输出检索日志
         self._log_rag_results(
@@ -1227,7 +1269,13 @@ class RAGDiaryPlugin:
                 score = getattr(r, 'rerank_score', None) or r.score or 0
                 score_pct = score * 100
                 source = getattr(r, 'source', 'unknown')
-                logger.info(f'\n   [{i+1}] 相似度: {score_pct:.1f}% | 来源: {source}')
+
+                # 获取文件路径信息
+                file_path = getattr(r, 'full_path', '') or getattr(r, 'source_file', '')
+                if file_path:
+                    logger.info(f'\n   [{i+1}] 相似度: {score_pct:.1f}% | 来源: {source} | 文件: {file_path}')
+                else:
+                    logger.info(f'\n   [{i+1}] 相似度: {score_pct:.1f}% | 来源: {source}')
 
                 matched_tags = getattr(r, 'matched_tags', None)
                 if matched_tags:
@@ -1262,7 +1310,6 @@ class RAGDiaryPlugin:
         """
         获取时间范围内的文件路径列表
 
-        按照 JavaScript 原版逻辑实现：
         - 直接读取文件系统（不使用数据库）
         - 只读取每个文件的前 100 字符
         - 从首行提取日期格式 [2026.03.01] 或 [2026-03-01]
@@ -1443,7 +1490,7 @@ class RAGDiaryPlugin:
         filtered = []
 
         for result in results:
-            text = result.get('text', '')
+            text = _get_attr(result, 'text', '')
 
             if not text:
                 # 没有文本内容，保留
@@ -1567,13 +1614,13 @@ class RAGDiaryPlugin:
         results_with_tags = 0
 
         for result in results:
-            matched_tags = result.get('matched_tags', [])
+            matched_tags = _get_attr(result, 'matched_tags', [])
             if matched_tags and len(matched_tags) > 0:
                 for tag in matched_tags:
                     all_matched_tags.add(tag)
                 results_with_tags += 1
 
-                boost_factor = result.get('boost_factor', 0.0)
+                boost_factor = _get_attr(result, 'boost_factor', 0.0)
                 total_boost_factor += boost_factor
 
         avg_boost_factor = (
@@ -1600,7 +1647,6 @@ class RAGDiaryPlugin:
         """
         使用 Rerank API 重新排序文档
 
-        按照 JavaScript 原版逻辑实现：
         - 断路器模式防止频繁调用失败的 API
         - Token 感知查询截断
         - 智能批处理
@@ -1672,7 +1718,7 @@ class RAGDiaryPlugin:
         max_batch_tokens = max_tokens - query_tokens - 1000  # 预留1000 tokens安全边距
 
         for doc in documents:
-            doc_text = doc.get('text', '')
+            doc_text = _get_attr(doc, 'text', '')
             doc_tokens = self._estimate_tokens(doc_text)
 
             # 如果单个文档就超过限制，跳过该文档
@@ -1707,7 +1753,7 @@ class RAGDiaryPlugin:
         failed_batches = 0
 
         for i, batch in enumerate(batches):
-            doc_texts = [d.get('text', '') for d in batch]
+            doc_texts = [_get_attr(d, 'text', '') for d in batch]
 
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1835,12 +1881,15 @@ class RAGDiaryPlugin:
         Returns:
             格式的文本
         """
+        logger.info(f"[RAGDiary] 📝 格式化标准结果: {len(search_results)} 条 -> \"{display_name}\"")
+
         # 构建内部内容
         inner_content = f'\n[--- 从"{display_name}"中检索到的相关记忆片段 ---]\n'
 
         if search_results:
-            for result in search_results[:metadata.get('k', 10)]:
-                text = result.get('text', '').strip()
+            for i, result in enumerate(search_results[:metadata.get('k', 10)]):
+                text = _get_attr(result, 'text', '').strip()
+                logger.debug(f"[RAGDiary]   结果[{i+1}]: {text[:50]}...")
                 inner_content += f'* {text}\n'
         else:
             inner_content += '没有找到直接相关的记忆片段。'
@@ -1850,7 +1899,9 @@ class RAGDiaryPlugin:
         # 转义元数据中的 -->
         metadata_string = json.dumps(metadata, ensure_ascii=False).replace('-->', '--\\>')
 
-        return f'<!-- RAG_BLOCK_START {metadata_string} -->{inner_content}<!-- RAG_BLOCK_END -->'
+        result = f'<!-- RAG_BLOCK_START {metadata_string} -->{inner_content}<!-- RAG_BLOCK_END -->'
+        logger.info(f"[RAGDiary] ✅ 格式化完成，结果长度: {len(result)} 字符")
+        return result
 
     def format_combined_time_aware_results(
         self,
@@ -1862,7 +1913,6 @@ class RAGDiaryPlugin:
         """
         格式化时间感知结果为 RAG_BLOCK 格式（多时间感知）
 
-        按照 JavaScript 原版逻辑：
         - 分离语义相关和时间范围结果
         - 添加统计信息
         - 分别显示两个章节
@@ -1876,6 +1926,8 @@ class RAGDiaryPlugin:
         Returns:
             RAG_BLOCK 格式的文本
         """
+        logger.info(f"[RAGDiary] 📝 格式化时间感知结果: {len(results)} 条 -> \"{db_name}日记本\"")
+
         # 显示名称
         display_name = f'{db_name}日记本'
 
@@ -1894,8 +1946,8 @@ class RAGDiaryPlugin:
         inner_content += f'[合并查询的时间范围: {formatted_ranges}]\n'
 
         # 分离结果为语义相关和时间范围
-        rag_entries = [e for e in results if e.get('source') == 'rag']
-        time_entries = [e for e in results if e.get('source') == 'time']
+        rag_entries = [e for e in results if _get_attr(e, 'source') == 'rag']
+        time_entries = [e for e in results if _get_attr(e, 'source') == 'time']
 
         # 添加统计信息
         inner_content += f'[统计: 共找到 {len(results)} 条不重复记忆 (语义相关 {len(rag_entries)}条, 时间范围 {len(time_entries)}条)]\n\n'
@@ -1904,13 +1956,17 @@ class RAGDiaryPlugin:
         if rag_entries:
             inner_content += '【语义相关记忆】\n'
             for entry in rag_entries:
-                text = entry.get('text', '')
+                text = _get_attr(entry, 'text', '')
+                # 获取文件路径
+                file_path = _get_attr(entry, 'full_path', '') or _get_attr(entry, 'source_file', '')
                 # 提取日期前缀
                 date_match = re.match(r'^\[(\d{4}-\d{2}-\d{2})\]', text)
                 date_prefix = f'[{date_match.group(1)}] ' if date_match else ''
                 # 移除日期头
                 cleaned_text = re.sub(r'^\[.*?\]\s*-\s*.*?\n?', '', text).strip()
-                inner_content += f'* {date_prefix}{cleaned_text}\n'
+                # 添加文件路径信息
+                path_info = f' 📁 {Path(file_path).name}' if file_path else ''
+                inner_content += f'* {date_prefix}{cleaned_text}{path_info}\n'
 
         # 时间范围记忆章节
         if time_entries:
@@ -1918,14 +1974,14 @@ class RAGDiaryPlugin:
             # 按日期从新到旧排序
             sorted_time_entries = sorted(
                 time_entries,
-                key=lambda e: e.get('date', ''),
+                key=lambda e: _get_attr(e, 'date', ''),
                 reverse=True
             )
             for entry in sorted_time_entries:
-                text = entry.get('text', '')
+                text = _get_attr(entry, 'text', '')
                 # 移除日期头
                 cleaned_text = re.sub(r'^\[.*?\]\s*-\s*.*?\n?', '', text).strip()
-                date_str = entry.get('date', '')
+                date_str = _get_attr(entry, 'date', '')
                 inner_content += f'* [{date_str}] {cleaned_text}\n'
 
         inner_content += '[--- 检索结束 ---]\n'
@@ -1953,30 +2009,95 @@ class RAGDiaryPlugin:
         for r in results:
             # 仅保留可序列化的关键属性
             cleaned = {
-                'text': r.get('text', ''),
-                'score': r.get('score'),
-                'source': r.get('source'),
-                'date': r.get('date'),
+                'text': _get_attr(r, 'text', ''),
+                'score': _get_attr(r, 'score'),
+                'source': _get_attr(r, 'source'),
+                'date': _get_attr(r, 'date'),
             }
 
             # 包含 Tag 相关信息（如果存在）
-            if r.get('originalScore') is not None:
-                cleaned['originalScore'] = r['originalScore']
-            if r.get('tagMatchScore') is not None:
-                cleaned['tagMatchScore'] = r['tagMatchScore']
-            if r.get('matchedTags') and isinstance(r['matchedTags'], list):
-                cleaned['matchedTags'] = r['matchedTags']
-            if r.get('tagMatchCount') is not None:
-                cleaned['tagMatchCount'] = r['tagMatchCount']
-            if r.get('boostFactor') is not None:
-                cleaned['boostFactor'] = r['boostFactor']
-            # 确保 coreTagsMatched 是纯字符串数组
-            if r.get('coreTagsMatched') and isinstance(r['coreTagsMatched'], list):
+            # 安全地检查动态属性（适用于 dataclass 和普通对象）
+            try:
+                if hasattr(r, '__dict__'):
+                    r_dict = r.__dict__
+                    if 'originalScore' in r_dict:
+                        cleaned['originalScore'] = r_dict['originalScore']
+                    if 'tagMatchScore' in r_dict:
+                        cleaned['tagMatchScore'] = r_dict['tagMatchScore']
+                    if 'tagMatchCount' in r_dict:
+                        cleaned['tagMatchCount'] = r_dict['tagMatchCount']
+            except (TypeError, AttributeError):
+                pass  # r 是普通字典或其他类型，跳过动态属性检查
+
+            # matchedTags 使用 dataclass 属性 matched_tags
+            matched_tags = _get_attr(r, 'matched_tags', [])
+            if matched_tags:
+                cleaned['matchedTags'] = matched_tags
+
+            # boostFactor 使用 dataclass 属性 boost_factor
+            boost_factor = _get_attr(r, 'boost_factor', 0.0)
+            if boost_factor != 0.0:
+                cleaned['boostFactor'] = boost_factor
+
+            # coreTagsMatched 使用 dataclass 属性 core_tags_matched
+            core_tags = _get_attr(r, 'core_tags_matched', [])
+            if core_tags:
                 cleaned['coreTagsMatched'] = [
-                    t for t in r['coreTagsMatched']
+                    t for t in core_tags
                     if isinstance(t, str)
                 ]
 
             cleaned_results.append(cleaned)
 
         return cleaned_results
+
+
+# ==================== Module-level exports for plugin manager ====================
+
+# 创建全局插件实例
+_plugin_instance: Optional['RAGDiaryPlugin'] = None
+
+
+def initialize(config: Dict[str, Any], dependencies: Dict[str, Any]) -> None:
+    """
+    初始化插件（模块级别，供 PluginManager 调用）
+
+    Args:
+        config: 插件配置字典
+        dependencies: 依赖注入字典 (vectorDBManager 等)
+    """
+    global _plugin_instance
+    if _plugin_instance is None:
+        _plugin_instance = RAGDiaryPlugin()
+        _plugin_instance.rag_config = config
+        _plugin_instance.vector_db_manager = dependencies.get('vectorDBManager')
+        _plugin_instance.is_initialized = True
+        logger.info("[RAGDiaryPlugin] Plugin initialized via module-level initialize()")
+
+
+async def process_messages(messages: List[Dict[str, Any]], plugin_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    处理消息（模块级别，供 PluginManager 调用）
+
+    Args:
+        messages: 消息列表
+        plugin_config: 插件配置
+
+    Returns:
+        处理后的消息列表
+    """
+    global _plugin_instance
+
+    if _plugin_instance is None:
+        logger.warning("[RAGDiaryPlugin] Plugin not initialized, creating instance on-the-fly")
+        _plugin_instance = RAGDiaryPlugin()
+        _plugin_instance.is_initialized = True
+
+    return await _plugin_instance.process_messages(messages, plugin_config)
+
+
+def shutdown() -> None:
+    """关闭插件（模块级别）"""
+    global _plugin_instance
+    _plugin_instance = None
+    logger.info("[RAGDiaryPlugin] Plugin shutdown")

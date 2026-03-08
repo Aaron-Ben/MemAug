@@ -227,7 +227,8 @@ class VectorIndex:
             # 获取数据库连接（使用 SQLAlchemy）
             db_path = str(self.config.store_path / "emotional_companionship.db")
             import sqlite3
-            db = sqlite3.connect(db_path)
+            # 修复: 允许跨线程使用连接 (EPA 模块需要在异步线程池中执行)
+            db = sqlite3.connect(db_path, check_same_thread=False)
 
             self.epa = EPAModule(
                 db=db,
@@ -519,14 +520,15 @@ class VectorIndex:
             else:
                 logging.info("[VectorIndex] ✨ Creating new Tag index...")
                 self.tag_index = VexusIndex(self.config.dimension, self.config.capacity)
-                # 从数据库恢复标签
-                await self._recover_tags_from_db()
-                await self._save_index_to_disk()
+                # 🌟 后台异步恢复标签：不阻塞 initialize() 返回
+                # 使用 create_task 将恢复任务推迟到后台执行
+                asyncio.create_task(self._recover_tags_from_db())
         except Exception as e:
             logging.error(f"[VectorIndex] ❌ Tag index load failed: {e}")
             logging.warning("[VectorIndex] 🔄 Creating new Tag index as fallback...")
             self.tag_index = VexusIndex(self.config.dimension, self.config.capacity)
-            await self._recover_tags_from_db()
+            # 即使在 fallback 情况下，也在后台恢复
+            asyncio.create_task(self._recover_tags_from_db())
 
     def _start_watcher(self) -> None:
         """启动文件监视器"""
@@ -688,15 +690,21 @@ class VectorIndex:
             logging.error(f"[VectorIndex] ❌ Rust recovery failed: {e}")
 
     async def _recover_tags_from_db(self) -> None:
-        """从数据库恢复标签到索引（使用 Rust 高性能恢复）"""
-        logging.info("[VectorIndex] 🔄 Recovering Tag index from database via Rust...")
+        """
+        从数据库恢复标签到索引（使用 Rust 高性能恢复）
+
+        ⚠️ 注意：此方法应该在后台任务中调用，使用 asyncio.create_task()
+        这样可以确保 initialize() 函数能够快速返回
+        """
+        logging.info("[VectorIndex] 🚀 Starting background recovery of tag index via Rust...")
         try:
             db_path = self.config.store_path / "emotional_companionship.db"
             count = self.tag_index.recover_from_sqlite(str(db_path), "tags", None)
-            logging.info(f"[VectorIndex] ✅ Recovered {count} tags via Rust")
+            logging.info(f"[VectorIndex] ✅ Background tag recovery complete. {count} vectors indexed via Rust.")
+            # 恢复完成后，保存一次索引以备下次直接加载
             await self._save_index_to_disk("global_tags")
         except Exception as e:
-            logging.error(f"[VectorIndex] ❌ Rust recovery failed: {e}")
+            logging.error("[VectorIndex] ❌ Background tag recovery failed:", e)
 
 
     # ==================== 核心搜索接口 ====================
@@ -1051,8 +1059,14 @@ class VectorIndex:
             config = self.rag_params.get('VectorIndex', {})
 
             # Step 2: EPA 分析
+            logging.debug("[VectorIndex] 🧠 Running EPA projection analysis...")
             epa_result = self.epa.project(original_float32)
+            logging.debug(f"[VectorIndex]   EPA logic_depth: {epa_result.get('logic_depth', 0):.3f}, entropy: {epa_result.get('entropy', 0):.3f}")
+
+            logging.debug("[VectorIndex] 🌊 Detecting cross-domain resonance...")
             resonance = self.epa.detect_cross_domain_resonance(original_float32)
+            logging.debug(f"[VectorIndex]   Resonance: {resonance.get('resonance', 0):.3f}")
+
             query_world = (
                 epa_result['dominant_axes'][0]['label']
                 if epa_result['dominant_axes']
@@ -1060,8 +1074,10 @@ class VectorIndex:
             )
 
             # Step 3: 残差金字塔分析
+            logging.debug("[VectorIndex] 🔺 Running residual pyramid analysis...")
             pyramid = self.residual_pyramid.analyze(original_float32)
             features = pyramid['features']
+            logging.debug(f"[VectorIndex]   Pyramid levels: {len(pyramid.get('levels', []))}, total_energy: {pyramid.get('total_explained_energy', 0):.3f}")
 
             # Step 4: 动态调整策略
             logic_depth = epa_result['logic_depth']
@@ -1085,13 +1101,13 @@ class VectorIndex:
             )
 
             # 计算动态核心加权因子
+            # 目标范围：1.20 (20%) ~ 1.40 (40%)
+            # 逻辑：逻辑深度越高（意图明确）或覆盖率越低（新领域需要锚点），核心标签权重越高
             core_metric = (logic_depth * 0.5) + ((1 - features['coverage']) * 0.5)
             core_range = config.get('coreBoostRange', self.config.core_boost_range)
-            # 使用 core_boost_factor 作为基础，然后应用动态调整
-            base_core_boost = core_boost_factor
-            dynamic_core_boost_factor = base_core_boost * (core_range[0] + (
+            dynamic_core_boost_factor = core_range[0] + (
                 core_metric * (core_range[1] - core_range[0])
-            ))
+            )
 
             # Step 5: 收集金字塔 Tags 并应用世界观门控
             all_tags = []
@@ -1117,13 +1133,21 @@ class VectorIndex:
                     # 世界观门控
                     layer_decay = 0.7 ** level.get('level', 0)
 
+                    # 🌟 核心 Tag 增强逻辑 (Spotlight)
+                    # 个体相关度微调：如果核心标签本身与查询高度相关，给予额外奖励 (0.95 ~ 1.05x)
+                    if is_core:
+                        individual_relevance = t.get('similarity', 0.5)
+                        core_boost = dynamic_core_boost_factor * (0.95 + individual_relevance * 0.1)
+                    else:
+                        core_boost = 1.0
+
                     all_tags.append({
                         **t,
                         'adjustedWeight': (
                             t.get('contribution', t.get('weight', 0))
                             * layer_decay
                             * lang_penalty
-                            * (dynamic_core_boost_factor if is_core else 1.0)
+                            * core_boost
                         ),
                         'isCore': is_core
                     })
@@ -1409,6 +1433,84 @@ class VectorIndex:
             return self._apply_simple_tag_boost(vector, tag_boost, core_tags)
 
         return self._apply_tag_memo_v3(vector, tag_boost, core_tags, core_boost_factor)
+
+    def get_epa_analysis(self, vector: Union[List[float], np.ndarray]) -> Dict[str, Any]:
+        """
+        获取向量的 EPA 分析数据（逻辑深度、共振等）
+
+        Args:
+            vector: 输入向量
+
+        Returns:
+            包含 logic_depth, entropy, resonance, dominant_axes 的字典
+        """
+        if not self.epa or not self.epa.initialized:
+            return {
+                "logic_depth": 0.5,
+                "resonance": 0.0,
+                "entropy": 0.5,
+                "dominant_axes": []
+            }
+
+        # 确保是 float32 numpy 数组
+        vec = self._ensure_float32(vector)
+
+        # 执行投影和共振检测
+        projection = self.epa.project(vec)
+        resonance = self.epa.detect_cross_domain_resonance(vec)
+
+        return {
+            "logic_depth": projection.get("logic_depth", 0.5),
+            "entropy": projection.get("entropy", 0.5),
+            "resonance": resonance.get("resonance", 0.0),
+            "dominant_axes": projection.get("dominant_axes", [])
+        }
+
+    async def deduplicate_results(
+        self,
+        candidates: List[Union[SearchResult, Dict]],
+        query_vector: Union[List[float], np.ndarray]
+    ) -> List[Union[SearchResult, Dict]]:
+        """
+        Tagmemo V4: 对结果集进行智能去重 (SVD + Residual)
+
+        Args:
+            candidates: 候选结果数组
+            query_vector: 查询向量
+
+        Returns:
+            去重后的结果
+        """
+        if not self.result_deduplicator:
+            return candidates
+
+        # 确保 query_vector 是 numpy 数组
+        if isinstance(query_vector, list):
+            query_vector = np.array(query_vector, dtype=np.float32)
+        elif not isinstance(query_vector, np.ndarray):
+            query_vector = np.array(query_vector, dtype=np.float32)
+
+        # 将 SearchResult 转换为字典格式
+        candidate_dicts = []
+        for c in candidates:
+            if isinstance(c, dict):
+                candidate_dicts.append(c)
+            elif hasattr(c, "__dict__"):
+                candidate_dicts.append(c.__dict__)
+            elif hasattr(c, "_asdict"):
+                candidate_dicts.append(c._asdict())
+            else:
+                candidate_dicts.append(vars(c))
+
+        # 调用去重器
+        logging.debug(f"[VectorIndex] 🔄 Calling deduplicator with {len(candidate_dicts)} candidates...")
+        deduplicated = await self.result_deduplicator.deduplicate(
+            candidate_dicts,
+            query_vector
+        )
+        logging.info(f"[VectorIndex] ✅ Deduplication complete: {len(candidate_dicts)} → {len(deduplicated)} results")
+
+        return deduplicated
 
     # ==================== 3. 添加向量 ====================
     async def add_vector(self, diary_name: str, id: int, vector_buffer: bytes) -> None:
@@ -1742,8 +1844,12 @@ class VectorIndex:
         """
         key = f"{character_name}:{file_path}"
         self.pending_files.add(key)
-        if auto_schedule and self.event_loop and asyncio.get_event_loop() == self.event_loop:
-            self._schedule_batch_flush()
+        if auto_schedule:
+            try:
+                self._schedule_batch_flush()
+            except RuntimeError:
+                # 事件循环未运行，静默忽略（由调用方手动触发）
+                pass
         logging.debug(f"[VectorIndex] 📥 Added file to queue: {key} (queue size: {len(self.pending_files)})")
 
     def _schedule_batch_flush(self) -> None:
@@ -2103,6 +2209,14 @@ class VectorIndex:
             self.add_file_to_queue(name, relative_path)
 
         logging.info(f"[VectorIndex] ✅ Added {len(txt_files)} files to batch queue for {name}")
+
+        # 手动触发批处理（确保标签被提取和存储）
+        if self.pending_files and self.event_loop:
+            try:
+                asyncio.create_task(self._flush_batch())
+            except RuntimeError:
+                # 如果没有运行中的事件循环，使用同步调度
+                self._schedule_batch_flush()
 
         return {"queued": len(txt_files), "total": len(txt_files)}
 
@@ -2479,7 +2593,18 @@ async def sync_all_diaries_to_vector_index() -> Dict[str, int]:
         logger.info("=" * 60)
         logger.info(f"  已加入队列: {total_stats['queued']} 个文件")
         logger.info(f"  总文件数: {total_stats['total']} 个文件")
-        logger.info("  ⏳ 批处理将在后台自动执行...")
+
+        # 手动触发批处理，确保标签被提取和存储
+        if vector_index.pending_files:
+            logger.info("  🚀 触发批处理...")
+            try:
+                await vector_index._flush_batch()
+                logger.info("  ✅ 批处理完成")
+            except Exception as e:
+                logger.error(f"  ❌ 批处理失败: {e}", exc_info=True)
+        else:
+            logger.info("  📭 队列为空，无需批处理")
+
         logger.info("=" * 60)
 
         return total_stats
@@ -2488,4 +2613,35 @@ async def sync_all_diaries_to_vector_index() -> Dict[str, int]:
         logger.error(f"❌ 向量索引同步失败: {e}", exc_info=True)
         logger.error("请检查向量索引配置和数据库连接")
         return {"queued": 0, "total": 0}
-    
+
+
+# ==================== 全局单例 ====================
+_vector_index_instance: Optional[VectorIndex] = None
+
+
+def get_vector_index() -> VectorIndex:
+    """
+    获取全局 VectorIndex 单例实例
+
+    Returns:
+        VectorIndex 实例
+    """
+    global _vector_index_instance
+    if _vector_index_instance is None:
+        config = VectorIndexConfig()
+        _vector_index_instance = VectorIndex(config)
+        logging.info("[VectorIndex] Global instance created")
+    return _vector_index_instance
+
+
+async def initialize_vector_index() -> VectorIndex:
+    """
+    初始化全局 VectorIndex 实例
+
+    Returns:
+        初始化后的 VectorIndex 实例
+    """
+    vector_index = get_vector_index()
+    await vector_index.initialize()
+    return vector_index
+

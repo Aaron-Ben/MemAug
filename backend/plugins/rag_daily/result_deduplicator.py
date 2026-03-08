@@ -86,7 +86,10 @@ class ResultDeduplicator:
             Deduplicated and diverse list of results
         """
         if not candidates or len(candidates) == 0:
+            logger.debug("[ResultDeduplicator] No candidates to deduplicate")
             return []
+
+        logger.info(f"[ResultDeduplicator] 🔄 Starting deduplication: {len(candidates)} candidates")
 
         # 1. Preprocess: filter results without vectors, ensure Float32Array
         valid_candidates = [
@@ -95,11 +98,11 @@ class ResultDeduplicator:
         ]
 
         if len(valid_candidates) <= 5:
+            logger.info(f"[ResultDeduplicator] ✅ Too few results ({len(valid_candidates)}), skipping deduplication")
             return candidates  # Too few results, no need to deduplicate
 
         logger.info(
-            f"[ResultDeduplicator] Starting deduplication for "
-            f"{len(valid_candidates)} candidates..."
+            f"[ResultDeduplicator] 🔍 Analyzing {len(valid_candidates)} valid candidates..."
         )
 
         # Extract vectors
@@ -227,8 +230,8 @@ class ResultDeduplicator:
                 break
 
         logger.info(
-            f"[ResultDeduplicator] Selected {len(selected_results)} / "
-            f"{len(valid_candidates)} diverse results."
+            f"[ResultDeduplicator] ✅ Selection complete: {len(selected_results)} / "
+            f"{len(valid_candidates)} diverse results selected."
         )
 
         return selected_results

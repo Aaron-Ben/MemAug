@@ -71,8 +71,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Failed to load Genie-TTS character: {e}")
 
-    # Load plugins
+    # ✅ 先初始化 VectorIndex，再加载插件（修复初始化顺序问题）
+    from app.vector_index import initialize_vector_index
     from plugins.plugin import plugin_manager
+
+    try:
+        vector_index = await initialize_vector_index()
+        plugin_manager.set_vector_db_manager(vector_index)
+        print("✅ VectorIndex 已初始化并注入到 plugin_manager")
+    except Exception as e:
+        print(f"❌ VectorIndex 初始化失败: {e}")
+
+    # Load plugins (现在 vector_db_manager 已经可用)
     try:
         await plugin_manager.load_plugins()
         print(f"Plugins loaded: {list(plugin_manager.plugins.keys())}")

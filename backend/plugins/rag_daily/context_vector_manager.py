@@ -212,7 +212,10 @@ class ContextVectorManager:
             embedding_cache: Embedding 缓存字典 {content: vector}
             allow_api: 是否允许 API 调用获取新向量（当前实现未使用）
         """
+        logger.info(f"[ContextVectorManager] 🔄 Updating context with {len(messages)} messages...")
+
         if not isinstance(messages, list):
+            logger.warning("[ContextVectorManager] ⚠️ Messages is not a list, skipping update")
             return
 
         new_assistant_vectors = []
@@ -285,10 +288,11 @@ class ContextVectorManager:
         self.history_assistant_vectors = new_assistant_vectors
         self.history_user_vectors = new_user_vectors
 
-        logger.debug(
-            f"[ContextVectorManager] 上下文向量映射已更新。"
-            f"历史AI向量: {len(self.history_assistant_vectors)}, "
-            f"历史用户向量: {len(self.history_user_vectors)}"
+        logger.info(
+            f"[ContextVectorManager] ✅ Context updated: "
+            f"{len(self.history_assistant_vectors)} AI vectors, "
+            f"{len(self.history_user_vectors)} user vectors, "
+            f"{len(self.vector_map)} total entries in cache"
         )
 
     def compute_semantic_width(self, vector: Optional[np.ndarray]) -> float:
@@ -324,6 +328,8 @@ class ContextVectorManager:
         Returns:
             分段列表，每个分段包含 {vector, text, role, range, count}
         """
+        logger.debug(f"[ContextVectorManager] 📊 Segmenting context with threshold={similarity_threshold}")
+
         # 重新构建有序序列
         sequence = []
         for index, msg in enumerate(messages):
@@ -420,6 +426,10 @@ class ContextVectorManager:
             current_segment['start_index'],
             current_segment['end_index']
         ))
+
+        logger.info(f"[ContextVectorManager] ✅ Segmentation complete: {len(segments)} segments created")
+        for i, seg in enumerate(segments):
+            logger.debug(f"[ContextVectorManager]   Segment[{i}]: {seg['count']} msgs, range=[{seg['range'][0]}-{seg['range'][1]}]")
 
         return segments
 

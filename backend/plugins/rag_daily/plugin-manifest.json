@@ -8,7 +8,7 @@
     "protocol": "direct"
   },
   "entryPoint": {
-    "script": "main.py"
+    "script": "rag_daily.py"
   },
   "configSchema": {
     "DebugMode": "boolean"

@@ -266,6 +266,18 @@ class ChatService:
         # Add current message
         messages.append({"role": "user", "content": request.message})
 
+        # ✅ 调用消息预处理器（RAG 检索）
+        if self.plugin_manager:
+            try:
+                processed_messages = await self.plugin_manager.execute_message_preprocessor(
+                    "RAGDiaryPlugin",
+                    messages
+                )
+                messages = processed_messages
+                logger.info(f"[RAG] Messages processed by RAGDiaryPlugin")
+            except Exception as e:
+                logger.warning(f"[RAG] Failed to process messages: {e}")
+
         return messages
 
     def _extract_response_without_tool_calls(self, response: str) -> str:
