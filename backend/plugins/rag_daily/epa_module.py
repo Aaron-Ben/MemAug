@@ -103,33 +103,41 @@ class EPAModule:
         """
         logger.info("[EPA] 🧠 Initializing orthogonal basis (Weighted PCA)...")
 
-        # Try to load from cache first
-
         try:
-            # 尝试从缓存加载
-            if await self._load_from_cache():
-                logger.info('[EPA] 💾 Loaded basis from cache.')
-                self.initialized = True
-                return True
+            # 缓存功能已禁用 - 直接从数据库加载
+            # # 尝试从缓存加载
+            # if await self._load_from_cache():
+            #     logger.info('[EPA] 💾 Loaded basis from cache.')
+            #     self.initialized = True
+            #     return True
 
             # 从数据库获取标签数据
             # 注意：这里需要根据你的数据库类型调整查询方式
             # 如果使用 sqlite3，需要同步执行，或者使用 aiosqlite
-            tags = self.db.execute(
-                "SELECT id, name, vector FROM tags WHERE vector IS NOT NULL"
-            ).fetchall()
+            try:
+                tags = self.db.execute(
+                    "SELECT id, name, vector FROM tags WHERE vector IS NOT NULL"
+                ).fetchall()
+            except Exception as db_err:
+                # 表不存在或其他数据库错误
+                logger.warning(f'[EPA] ⚠️ Database query failed: {db_err}')
+                tags = []
             
             # 转换标签数据格式（假设 vector 是二进制或序列化的数组）
             # 你可能需要根据实际存储格式调整这里的解析逻辑
             processed_tags = []
             for tag in tags:
                 tag_id, name, vector = tag
-                # 解析向量（示例：如果是 bytes，转换为 numpy 数组）
+                # 解析向量（支持多种格式）
                 if isinstance(vector, bytes):
                     vec = np.frombuffer(vector, dtype=np.float32)
+                elif isinstance(vector, str):
+                    # JSON 字符串格式
+                    vec = np.array(json.loads(vector), dtype=np.float32)
                 elif isinstance(vector, list):
                     vec = np.array(vector, dtype=np.float32)
                 else:
+                    # 已是 numpy 数组或其他格式
                     vec = vector
                 processed_tags.append({
                     'id': tag_id,
@@ -163,9 +171,11 @@ class EPAModule:
             self.basis_energies = S[:K]
             self.basis_mean = mean_vector
             self.basis_labels = labels[:K] if labels is not None else cluster_data['labels'][:K]
-            
-            # 保存到缓存
-            await self.save_to_cache()
+
+            # 缓存功能已禁用
+            # # 保存到缓存
+            # await self._save_to_cache()
+
             self.initialized = True
             return True
             

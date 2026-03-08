@@ -686,8 +686,81 @@ class VectorIndex:
             db_path = self.config.store_path / "emotional_companionship.db"
             count = idx.recover_from_sqlite(str(db_path), table_type, diary_name)
             logging.info(f"[VectorIndex] ✅ Recovered {count} vectors via Rust")
+
+            # 如果 Rust 恢复返回 0 条，尝试手动恢复
+            if count == 0 and table_type == "chunks":
+                logging.warning(f"[VectorIndex] ⚠️ Rust recovery returned 0 vectors, trying manual recovery...")
+                await self._manual_recover_chunks(idx, diary_name)
         except Exception as e:
             logging.error(f"[VectorIndex] ❌ Rust recovery failed: {e}")
+            # 如果 Rust 恢复失败，尝试手动恢复
+            if table_type == "chunks":
+                logging.info(f"[VectorIndex] 🔄 Attempting manual recovery as fallback...")
+                await self._manual_recover_chunks(idx, diary_name)
+
+    async def _manual_recover_chunks(
+        self,
+        idx: VexusIndex,
+        diary_name: str
+    ) -> None:
+        """
+        手动从数据库恢复 chunks 数据（备用方法）
+
+        Args:
+            idx: 索引实例
+            diary_name: 日记本名称
+        """
+        import sqlite3
+        import json
+        import time
+
+        logging.info(f"[VectorIndex] 🔧 Starting manual recovery for \"{diary_name}\"...")
+        try:
+            db_path = self.config.store_path / "emotional_companionship.db"
+            db = sqlite3.connect(str(db_path))
+            cursor = db.cursor()
+
+            # 查询该日记的所有 chunks
+            query = """
+                SELECT c.id, c.vector
+                FROM chunks c
+                JOIN diary_files df ON c.file_id = df.id
+                WHERE df.diary_name = ?
+                AND c.vector IS NOT NULL
+            """
+            cursor.execute(query, (diary_name,))
+            rows = cursor.fetchall()
+
+            if not rows:
+                logging.warning(f"[VectorIndex] ⚠️ No chunks found for \"{diary_name}\" in database")
+                return
+
+            # 批量添加向量到索引
+            count = 0
+            for chunk_id, vector_json in rows:
+                try:
+                    vector = json.loads(vector_json)
+                    if vector:
+                        vec_bytes = self._serialize_vector(vector)
+                        idx.add(chunk_id, vec_bytes)
+                        count += 1
+                except (json.JSONDecodeError, TypeError) as e:
+                    logging.debug(f"[VectorIndex] ⚠️ Failed to parse vector for chunk {chunk_id}: {e}")
+                    continue
+
+            logging.info(f"[VectorIndex] ✅ Manual recovery complete: {count} vectors added")
+
+            # 保存重建的索引
+            safe_name = hashlib.md5(diary_name.encode()).hexdigest()
+            idx_path = str(self.config.store_path / f"index_diary_{safe_name}.usearch")
+            idx.save(idx_path)
+            logging.info(f"[VectorIndex] 💾 Saved rebuilt index to disk")
+
+        except Exception as e:
+            logging.error(f"[VectorIndex] ❌ Manual recovery failed: {e}")
+        finally:
+            if 'db' in locals():
+                db.close()
 
     async def _recover_tags_from_db(self) -> None:
         """
@@ -1510,7 +1583,30 @@ class VectorIndex:
         )
         logging.info(f"[VectorIndex] ✅ Deduplication complete: {len(candidate_dicts)} → {len(deduplicated)} results")
 
-        return deduplicated
+        # 将 dict 格式的结果转换回 SearchResult 对象
+        result_objects = []
+        for d in deduplicated:
+            if isinstance(d, dict):
+                # 检查是否是 SearchResult 的 dict
+                if 'text' in d and 'score' in d and 'source_file' in d:
+                    result_objects.append(SearchResult(
+                        text=d.get('text', ''),
+                        score=d.get('score', 0.0),
+                        source_file=d.get('source_file', ''),
+                        full_path=d.get('full_path', ''),
+                        updated_at=d.get('updated_at'),
+                        matched_tags=d.get('matched_tags', []),
+                        boost_factor=d.get('boost_factor', 0),
+                        core_tags_matched=d.get('core_tags_matched', [])
+                    ))
+                else:
+                    # 不是 SearchResult 格式，保持原样
+                    result_objects.append(d)
+            else:
+                # 已经是对象，保持原样
+                result_objects.append(d)
+
+        return result_objects
 
     # ==================== 3. 添加向量 ====================
     async def add_vector(self, diary_name: str, id: int, vector_buffer: bytes) -> None:
@@ -1920,8 +2016,13 @@ class VectorIndex:
                             DiaryFileTable.path == file_path
                         ).first()
 
-                        if existing and existing.checksum == checksum:
-                            # 文件未变化，跳过
+                        # 检查索引文件是否存在
+                        safe_name = hashlib.md5(character_name.encode()).hexdigest()
+                        idx_path = self.config.store_path / f"index_diary_{safe_name}.usearch"
+                        index_exists = idx_path.exists()
+
+                        if existing and existing.checksum == checksum and index_exists:
+                            # 文件未变化且索引存在，跳过
                             self.pending_files.discard(key)
                             self.file_retry_count.pop(key, None)
                             skipped_files.append({
@@ -1929,6 +2030,9 @@ class VectorIndex:
                                 "file_path": file_path
                             })
                             continue
+                        elif existing and existing.checksum == checksum and not index_exists:
+                            # 文件未变化但索引不存在，需要重建索引
+                            logging.info(f"[VectorIndex] 🔄 Index missing for {file_path}, forcing rebuild...")
 
                         # 获取角色信息
                         character_service = CharacterService()
@@ -2148,6 +2252,27 @@ class VectorIndex:
                                 logging.error(f"[VectorIndex] Failed to upsert {chunk['id']}: {retry_err}")
 
                 self._schedule_index_save(diary_name)
+
+            # 处理 Tag 索引更新
+            if tag_cache and self.tag_index:
+                try:
+                    logging.info(f"[VectorIndex] 🏷️ Building tag index for {len(tag_cache)} tags...")
+                    # 添加新标签到 tag_index
+                    for tag, tag_data in tag_cache.items():
+                        if tag_data and "vector" in tag_data:
+                            vector_bytes = self._serialize_vector(tag_data["vector"])
+                            try:
+                                self.tag_index.add(tag_data["id"], vector_bytes)
+                            except Exception as e:
+                                if "Duplicate" in str(e):
+                                    if hasattr(self.tag_index, "remove"):
+                                        self.tag_index.remove(tag_data["id"])
+                                    self.tag_index.add(tag_data["id"], vector_bytes)
+                    # 安排保存 Tag 索引
+                    self._schedule_tag_index_save()
+                    logging.info(f"[VectorIndex] ✅ Tag index updated with {len(tag_cache)} tags")
+                except Exception as e:
+                    logging.error(f"[VectorIndex] ❌ Failed to update tag index: {e}")
 
             # 清理已处理的文件
             for key in batch_keys:
