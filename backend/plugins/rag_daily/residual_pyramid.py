@@ -144,6 +144,10 @@ class ResidualPyramid:
                 tag_ids = [r.id for r in tag_results]
                 raw_tags = self._get_tag_vectors(tag_ids)
 
+                # 显示搜索到的标签（最多20个）
+                tag_names = [t.get("name", "") for t in raw_tags[:20]]
+                logger.info(f"[ResidualPyramid] 🔍 Level {level}: Found {len(raw_tags)} tags: {tag_names}")
+
             if not raw_tags:
                 break
 
@@ -222,10 +226,19 @@ class ResidualPyramid:
 
             logger.info(f"[ResidualPyramid] 🔻 Level {level}: {len(tag_info_list)} tags, energy_explained={energy_explained_by_level:.2%}")
 
+            # 显示每个层级的详细信息
+            top_contributors = sorted(tag_info_list, key=lambda x: x['contribution'], reverse=True)[:5]
+            top_tags = [f"{t['name']}({t['contribution']:.2f})" for t in top_contributors]
+            logger.debug(f"[ResidualPyramid]   Top contributors: {top_tags}")
+
         self.final_residual = current_residual
         self.features = self._extract_pyramid_features()
 
         logger.info(f"[ResidualPyramid] ✅ Analysis complete: {len(self.levels)} levels, total_energy={self.total_explained_energy:.2%}")
+
+        # 显示最终特征摘要
+        if self.features:
+            logger.debug(f"[ResidualPyramid] 📊 Features summary: {list(self.features.keys())}")
 
         return self._compile_results()
 

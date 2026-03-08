@@ -220,6 +220,8 @@ class ContextVectorManager:
 
         new_assistant_vectors = []
         new_user_vectors = []
+        fuzzy_match_count = 0
+        cache_hit_count = 0
 
         # 识别最后的消息索引以进行排除
         last_user_index = next((
@@ -231,6 +233,8 @@ class ContextVectorManager:
             i for i in range(len(messages) - 1, -1, -1)
             if messages[i].get('role') == 'assistant'
         ), -1)
+
+        logger.debug(f"[ContextVectorManager] 📊 Last user index: {last_user_index}, Last AI index: {last_ai_index}")
 
         for index, msg in enumerate(messages):
             # 排除逻辑：系统消息、最后一个用户消息、最后一个 AI 消息
@@ -254,17 +258,25 @@ class ContextVectorManager:
             content_hash = self._generate_hash(normalized)
 
             vector = None
+            match_source = None
 
             # 1. 精确匹配
             if content_hash in self.vector_map:
                 vector = self.vector_map[content_hash]['vector']
+                match_source = "exact"
+                cache_hit_count += 1
             # 2. 模糊匹配 (处理微小编辑)
             else:
                 vector = self._find_fuzzy_match(normalized)
+                if vector is not None:
+                    match_source = "fuzzy"
+                    fuzzy_match_count += 1
 
                 # 3. 尝试从插件的 Embedding 缓存中获取（不触发 API）
                 if vector is None and embedding_cache:
                     vector = embedding_cache.get(content)
+                    if vector is not None:
+                        match_source = "embedding_cache"
 
                 # 4. 如果缓存也没有，且允许 API，则请求新向量（触发 API）
                 # 注意：当前实现中，API 调用应在外部处理
@@ -279,6 +291,7 @@ class ContextVectorManager:
                     }
 
             if vector is not None:
+                logger.debug(f"[ContextVectorManager] ✨ Msg[{index}] ({role}): matched via {match_source or 'new'}")
                 if role == 'assistant':
                     new_assistant_vectors.append(vector)
                 elif role == 'user':
@@ -288,12 +301,15 @@ class ContextVectorManager:
         self.history_assistant_vectors = new_assistant_vectors
         self.history_user_vectors = new_user_vectors
 
+        # 输出详细统计
         logger.info(
             f"[ContextVectorManager] ✅ Context updated: "
             f"{len(self.history_assistant_vectors)} AI vectors, "
             f"{len(self.history_user_vectors)} user vectors, "
             f"{len(self.vector_map)} total entries in cache"
         )
+        if fuzzy_match_count > 0:
+            logger.info(f"[ContextVectorManager] 🎭 Fuzzy matches: {fuzzy_match_count}, Cache hits: {cache_hit_count}")
 
     def compute_semantic_width(self, vector: Optional[np.ndarray]) -> float:
         """
@@ -428,8 +444,11 @@ class ContextVectorManager:
         ))
 
         logger.info(f"[ContextVectorManager] ✅ Segmentation complete: {len(segments)} segments created")
-        for i, seg in enumerate(segments):
-            logger.debug(f"[ContextVectorManager]   Segment[{i}]: {seg['count']} msgs, range=[{seg['range'][0]}-{seg['range'][1]}]")
+        for i, seg in enumerate(segments[:10]):
+            text_preview = seg['text'][:60].replace('\n', ' ')
+            logger.info(f"[ContextVectorManager] 📝 Segment[{i}]: {seg['count']} msgs, roles={seg['roles']}, text=\"{text_preview}...\"")
+        if len(segments) > 10:
+            logger.debug(f"[ContextVectorManager]   ... and {len(segments) - 10} more segments")
 
         return segments
 

@@ -105,6 +105,14 @@ class ResultDeduplicator:
             f"[ResultDeduplicator] 🔍 Analyzing {len(valid_candidates)} valid candidates..."
         )
 
+        # 显示候选结果的摘要信息
+        for i, c in enumerate(valid_candidates[:10]):
+            text_preview = c.get('text', '')[:50].replace('\n', ' ')
+            score = c.get('score', c.get('_score', 0))
+            logger.debug(f"[ResultDeduplicator]   Candidate[{i}]: score={score:.3f}, text=\"{text_preview}...\"")
+        if len(valid_candidates) > 10:
+            logger.debug(f"[ResultDeduplicator]   ... and {len(valid_candidates) - 10} more candidates")
+
         # Extract vectors
         vectors = []
         for c in valid_candidates:
@@ -233,6 +241,14 @@ class ResultDeduplicator:
             f"[ResultDeduplicator] ✅ Selection complete: {len(selected_results)} / "
             f"{len(valid_candidates)} diverse results selected."
         )
+
+        # 显示最终选择的结果摘要
+        for i, r in enumerate(selected_results[:5]):
+            text_preview = r.get('text', '')[:50].replace('\n', ' ')
+            score = r.get('score', r.get('_score', 0))
+            logger.debug(f"[ResultDeduplicator]   Selected[{i}]: score={score:.3f}, text=\"{text_preview}...\"")
+        if len(selected_results) > 5:
+            logger.debug(f"[ResultDeduplicator]   ... and {len(selected_results) - 5} more results")
 
         return selected_results
 

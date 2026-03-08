@@ -565,8 +565,12 @@ class EPAModule:
         dominant_axes.sort(key=lambda x: x["energy"], reverse=True)
 
         logger.info(f"[EPA] ✅ Projection complete: entropy={normalized_entropy:.3f}, dominant_axes={len(dominant_axes)}")
+
+        # 显示召回的标签（最多20个）
         if dominant_axes:
-            logger.debug(f"[EPA]   Top axes: {[ax['label'] for ax in dominant_axes[:3]]}")
+            top_labels = [ax['label'] for ax in dominant_axes[:20]]
+            logger.info(f"[EPA] 🏷️ Recalled {len(top_labels)} tags (max 20): {top_labels}")
+            logger.debug(f"[EPA] 📊 Top axes details: {dominant_axes[:5]}")
 
         return {
             "projections": projections,
@@ -616,6 +620,13 @@ class EPAModule:
                 })
 
         total_resonance = sum(b["strength"] for b in bridges)
+
+        # 输出共振检测结果
+        if bridges:
+            bridge_info = [f"{b['from']}↔{b['to']}({b['strength']:.2f})" for b in bridges[:5]]
+            logger.info(f"[EPA] 🔗 Cross-domain resonance: {total_resonance:.3f}, bridges: {bridge_info}")
+        else:
+            logger.debug(f"[EPA] 🔗 No cross-domain resonance detected")
 
         return {
             "resonance": float(total_resonance),

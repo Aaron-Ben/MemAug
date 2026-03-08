@@ -951,6 +951,8 @@ class RAGDiaryPlugin:
         if context_diary_prefixes is None:
             context_diary_prefixes = set()
 
+        logger.info(f"[RAGDiary] 🔎 开始执行检索: db_name={db_name}, k={k}, use_time={use_time}, use_rerank={use_rerank}, tag_weight={tag_weight}")
+
         # 1. 解析修饰符
         use_time = False
         use_rerank = False
@@ -986,6 +988,8 @@ class RAGDiaryPlugin:
         if use_rerank and hasattr(self, 'rerank_config') and self.rerank_config:
             rerank_multiplier = self.rerank_config.get('multiplier', 1.5)
             k_for_search = int(k * rerank_multiplier) + dedup_buffer
+
+        logger.debug(f"[RAGDiary] 📊 K值计算: base_k={base_k:.1f}, multiplier={k_multiplier:.2f}, final_k={k}, k_for_search={k_for_search}")
 
         # 2. 原子级复刻 LightMemo 流程：利用 applyTagBoost 预先感应语义 Tag
         core_tags: List[str] = []
@@ -1039,6 +1043,15 @@ class RAGDiaryPlugin:
                     for r in rag_results:
                         r.__dict__['source'] = 'rag'
                     logger.info(f"[RAGDiary] 📊 语义路去重后: {len(rag_results)} 条")
+
+                    # 显示语义路召回的文件路径
+                    for i, r in enumerate(rag_results[:10]):
+                        file_path = getattr(r, 'full_path', '') or getattr(r, 'source_file', '')
+                        file_name = Path(file_path).name if file_path else 'unknown'
+                        score = getattr(r, 'score', 0)
+                        logger.debug(f"[RAGDiary]   Semantic[{i}]: score={score:.2f}, file={file_name}")
+                    if len(rag_results) > 10:
+                        logger.debug(f"[RAGDiary]   ... and {len(rag_results) - 10} more results")
                 except Exception as e:
                     logger.warning(f"[RAGDiaryPlugin] Semantic search failed: {e}")
 
@@ -1095,6 +1108,16 @@ class RAGDiaryPlugin:
 
             final_results = list(all_entries.values())
             logger.info(f"[RAGDiary] 🎯 双路合并结果: {len(final_results)} 条 (语义: {len(rag_results)}, 时间: {len(time_results)})")
+
+            # 显示合并后的文件路径
+            for i, r in enumerate(final_results[:10]):
+                file_path = getattr(r, 'full_path', '') or getattr(r, 'source_file', '')
+                file_name = Path(file_path).name if file_path else 'unknown'
+                source = getattr(r, 'source', 'unknown')
+                score = getattr(r, 'score', 0)
+                logger.debug(f"[RAGDiary]   Merged[{i}]: score={score:.2f}, source={source}, file={file_name}")
+            if len(final_results) > 10:
+                logger.debug(f"[RAGDiary]   ... and {len(final_results) - 10} more results")
 
             # 如果启用了 Rerank，对合并后的结果进行最终重排
             if use_rerank and final_results:
