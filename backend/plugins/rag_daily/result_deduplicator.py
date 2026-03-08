@@ -169,7 +169,7 @@ class ResultDeduplicator:
             selected_results.append(valid_candidates[best_idx])
 
         # 4.2 Iterative selection: find candidates that best explain residual features
-        max_rounds = self.max_results - 1
+        max_rounds = self.config['max_results'] - 1
 
         # Initial orthogonal basis = [first place]
         current_basis = [vectors[best_idx]]

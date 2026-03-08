@@ -9,6 +9,9 @@ from typing import Dict, Optional, List, Tuple, Any, Union, Set
 from dataclasses import dataclass, field
 import logging
 
+# ==================== NumPy ====================
+import numpy as np
+
 # ==================== Database ====================
 from sqlalchemy.orm import Session
 from app.models.database import DiaryFileTable, ChunkTable, TagTable, FileTagTable, KVStoreTable, SessionLocal
@@ -17,6 +20,11 @@ from app.models.database import DiaryFileTable, ChunkTable, TagTable, FileTagTab
 from app.services.chunk_text import chunk_text
 from app.services.embedding import EmbeddingService
 from app.services.character_service import CharacterService
+
+# ==================== RAG Daily Plugins ====================
+from plugins.rag_daily.epa_module import EPAModule
+from plugins.rag_daily.residual_pyramid import ResidualPyramid
+from plugins.rag_daily.result_deduplicator import ResultDeduplicator
 
 # ==================== 配置 ====================
 @dataclass
@@ -43,6 +51,28 @@ class VectorIndexConfig:
     # 标签黑名单配置
     tag_blacklist: set = field(default_factory=set)
     tag_blacklist_super: List[str] = field(default_factory=list)
+
+    # ==================== TagMemo V3 配置 ====================
+    # 语言置信度补偿
+    lang_confidence_enabled: bool = True
+    lang_penalty_unknown: float = 0.05
+    lang_penalty_cross_domain: float = 0.1
+
+    # Tag 扩展配置
+    tag_expand_max_count: int = 30
+
+    # 去重阈值
+    deduplication_threshold: float = 0.88
+    tech_tag_threshold: float = 0.08
+    normal_tag_threshold: float = 0.015
+
+    # 动态增强范围
+    activation_multiplier: Tuple[float, float] = (0.5, 1.5)
+    dynamic_boost_range: Tuple[float, float] = (0.3, 2.0)
+    core_boost_range: Tuple[float, float] = (1.20, 1.40)
+
+    # RAG 参数文件路径
+    rag_params_path: Optional[str] = None
 
     @property
     def store_path(self) -> Path:
@@ -107,6 +137,18 @@ class VectorIndex:
         self.watcher = None  # watchdog.Observer 实例
         self.event_loop: Optional[asyncio.AbstractEventLoop] = None  # 主事件循环
 
+        # ==================== TagMemo V3 模块 ====================
+        self.epa: Optional[EPAModule] = None                    # EPAModule 实例
+        self.residual_pyramid: Optional[ResidualPyramid] = None       # ResidualPyramid 实例
+        self.result_deduplicator: Optional[ResultDeduplicator] = None    # ResultDeduplicator 实例
+
+        # ==================== Tag 共现矩阵 ====================
+        self.tag_cooccurrence_matrix: Dict[int, Dict[int, float]] = {}
+
+        # ==================== RAG 热调控参数 ====================
+        self.rag_params: Dict[str, Any] = {}
+        self.rag_params_watcher: Optional[Any] = None     # 文件监视器
+
         self._ensure_store_path()
 
     def _ensure_store_path(self) -> None:
@@ -116,6 +158,309 @@ class VectorIndex:
             store_path.mkdir(parents=True, exist_ok=True)
             logging.info(f"[VectorIndex] Created store path: {store_path}")
 
+    # ==================== TagMemo V3: RAG 参数加载 ====================
+    async def load_rag_params(self) -> None:
+        """
+        加载 RAG 热调控参数
+
+        从 rag_params.json 文件加载配置参数，支持运行时热更新
+        """
+        params_path = self.config.rag_params_path or str(self.config.store_path.parent / "rag_params.json")
+        try:
+            path = Path(params_path)
+            if path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    self.rag_params = json.load(f)
+                logging.info(f"[VectorIndex] ✅ RAG 热调控参数已加载: {params_path}")
+            else:
+                logging.warning(f"[VectorIndex] ⚠️ rag_params.json 文件不存在: {params_path}")
+                self.rag_params = {'VectorIndex': {}}
+        except Exception as e:
+            logging.error(f"[VectorIndex] ❌ 加载 rag_params.json 失败: {e}")
+            self.rag_params = {'VectorIndex': {}}
+
+    def _start_rag_params_watcher(self) -> None:
+        """
+        启动参数文件监听器
+
+        使用 watchdog 监听 rag_params.json 文件变化，自动重新加载参数
+        """
+        if self.rag_params_watcher:
+            return
+
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+
+        params_path = self.config.rag_params_path or str(self.config.store_path.parent / "rag_params.json")
+
+        class ParamsFileHandler(FileSystemEventHandler):
+            def __init__(self, vector_index):
+                self.vector_index = vector_index
+
+            def on_modified(self, event):
+                if not event.is_directory and event.src_path.endswith(params_path):
+                    logging.info("[VectorIndex] 🔄 检测到 rag_params.json 变更，正在重新加载...")
+                    asyncio.run_coroutine_threadsafe(
+                        self.vector_index.load_rag_params(),
+                        self.vector_index.event_loop
+                    )
+
+        try:
+            observer = Observer()
+            observer.schedule(ParamsFileHandler(self), str(Path(params_path).parent), recursive=False)
+            observer.start()
+            self.rag_params_watcher = observer
+            logging.info(f"[VectorIndex] 👀 RAG 参数文件监听已启动: {params_path}")
+        except Exception as e:
+            logging.warning(f"[VectorIndex] ⚠️ 无法启动参数文件监听: {e}")
+
+    # ==================== TagMemo V3: 模块初始化 ====================
+    async def _init_epa_module(self) -> None:
+        """
+        初始化 EPA 模块
+
+        EPA (Embedding Projection Analysis) 模块用于语义空间投影和跨域共振检测
+        """
+        try:
+            logging.info("[VectorIndex] 🧠 Initializing EPA Module...")
+
+            # 获取数据库连接（使用 SQLAlchemy）
+            db_path = str(self.config.store_path / "emotional_companionship.db")
+            import sqlite3
+            db = sqlite3.connect(db_path)
+
+            self.epa = EPAModule(
+                db=db,
+                config={
+                    'dimension': self.config.dimension,
+                    'max_basis_dim': 64,
+                    'min_variance_ratio': 0.01,
+                    'cluster_count': 32,
+                    'vexus_index': self.tag_index,
+                }
+            )
+
+            # 初始化 EPA
+            success = await self.epa.initialize()
+            if success:
+                logging.info("[VectorIndex] ✅ EPA Module initialized")
+            else:
+                logging.warning("[VectorIndex] ⚠️ EPA Module initialization failed, will use fallback")
+                self.epa = None
+
+        except Exception as e:
+            logging.error(f"[VectorIndex] ❌ EPA Module initialization error: {e}")
+            self.epa = None
+
+    async def _init_residual_pyramid(self) -> None:
+        """
+        初始化残差金字塔模块
+
+        残差金字塔用于多级语义残差分析和特征提取
+        """
+        try:
+            logging.info("[VectorIndex] 🔺 Initializing Residual Pyramid Module...")
+
+            # 获取数据库连接
+            db_path = str(self.config.store_path / "emotional_companionship.db")
+            import sqlite3
+            db = sqlite3.connect(db_path)
+
+            self.residual_pyramid = ResidualPyramid(
+                tag_index=self.tag_index,
+                db=db,
+                config={
+                    'dimension': self.config.dimension,
+                    'max_levels': 3,
+                    'top_k': 10,
+                    'min_energy_ratio': 0.1,
+                }
+            )
+
+            logging.info("[VectorIndex] ✅ Residual Pyramid Module initialized")
+
+        except Exception as e:
+            logging.error(f"[VectorIndex] ❌ Residual Pyramid initialization error: {e}")
+            self.residual_pyramid = None
+
+    async def _init_result_deduplicator(self) -> None:
+        """
+        初始化结果去重器模块
+
+        结果去重器用于 SVD 主题分析和结果去重
+        """
+        try:
+            logging.info("[VectorIndex] 🔄 Initializing Result Deduplicator Module...")
+
+            # 获取数据库连接
+            db_path = str(self.config.store_path / "emotional_companionship.db")
+            import sqlite3
+            db = sqlite3.connect(db_path)
+
+            self.result_deduplicator = ResultDeduplicator(
+                db=db,
+                config={
+                    'dimension': self.config.dimension,
+                    'max_results': 20,
+                    'topic_count': 8,
+                    'min_energy_ratio': 0.1,
+                    'redundancy_threshold': 0.85,
+                }
+            )
+
+            logging.info("[VectorIndex] ✅ Result Deduplicator Module initialized")
+
+        except Exception as e:
+            logging.error(f"[VectorIndex] ❌ Result Deduplicator initialization error: {e}")
+            self.result_deduplicator = None
+
+    async def _build_cooccurrence_matrix(self) -> None:
+        """
+        构建 Tag 共现矩阵
+
+        从数据库 file_tags 表统计 Tag 共现频率，用于逻辑分支拉回
+        """
+        logging.info("[VectorIndex] 🧠 Building tag co-occurrence matrix...")
+
+        db_path = str(self.config.store_path / "emotional_companionship.db")
+        import sqlite3
+
+        try:
+            db = sqlite3.connect(db_path)
+            cursor = db.cursor()
+
+            # SQL 查询：统计 Tag 共现频率
+            query = """
+                SELECT ft1.tag_id as tag1, ft2.tag_id as tag2, COUNT(ft1.file_id) as weight
+                FROM file_tags ft1
+                JOIN file_tags ft2 ON ft1.file_id = ft2.file_id AND ft1.tag_id < ft2.tag_id
+                GROUP BY ft1.tag_id, ft2.tag_id
+            """
+
+            cursor.execute(query)
+            matrix = {}
+
+            for row in cursor.fetchall():
+                tag1, tag2, weight = row
+                if tag1 not in matrix:
+                    matrix[tag1] = {}
+                if tag2 not in matrix:
+                    matrix[tag2] = {}
+                matrix[tag1][tag2] = float(weight)
+                matrix[tag2][tag1] = float(weight)
+
+            self.tag_cooccurrence_matrix = matrix
+            logging.info(f"[VectorIndex] ✅ Tag co-occurrence matrix built. ({len(matrix)} tags)")
+
+        except Exception as e:
+            logging.error(f"[VectorIndex] ❌ Failed to build co-occurrence matrix: {e}")
+            self.tag_cooccurrence_matrix = {}
+        finally:
+            if 'db' in locals():
+                db.close()
+
+    def _apply_language_compensation(
+        self,
+        tag_name: str,
+        query_world: str,
+        config: Dict[str, Any]
+    ) -> float:
+        """
+        应用语言置信度补偿
+
+        检测技术噪音标签并应用跨域惩罚
+
+        Args:
+            tag_name: 标签名称
+            query_world: 查询世界观
+            config: RAG 配置参数
+
+        Returns:
+            补偿因子（0-1）
+        """
+        if not self.config.lang_confidence_enabled:
+            return 1.0
+
+        # 检测是否为技术噪音
+        is_technical_noise = (
+            not re.search(r'[\u4e00-\u9fa5]', tag_name) and
+            re.match(r'^[A-Za-z0-9\-_.\s]+$', tag_name) and
+            len(tag_name) > 3
+        )
+
+        is_technical_world = (
+            query_world != 'Unknown' and
+            re.match(r'^[A-Za-z0-9\-_.]+$', query_world)
+        )
+
+        if is_technical_noise and not is_technical_world:
+            # 社会世界观检测
+            is_social_world = re.search(
+                r'Politics|Society|History|Economics|Culture',
+                query_world,
+                re.IGNORECASE
+            )
+
+            # 从 RAG 配置获取惩罚值
+            lang_config = config.get('languageCompensator', {})
+            base_penalty = (
+                lang_config.get('penaltyUnknown', self.config.lang_penalty_unknown)
+                if query_world == 'Unknown'
+                else lang_config.get('penaltyCrossDomain', self.config.lang_penalty_cross_domain)
+            )
+
+            # 社会世界观使用平方根软化惩罚
+            return np.sqrt(base_penalty) if is_social_world else base_penalty
+
+        return 1.0
+
+    def _filter_matched_tags(
+        self,
+        deduplicated_tags: List[Dict],
+        config: Dict[str, Any]
+    ) -> List[str]:
+        """
+        过滤匹配的标签
+
+        基于阈值过滤匹配的标签，核心标签始终包含
+
+        Args:
+            deduplicated_tags: 去重后的标签列表
+            config: RAG 配置参数
+
+        Returns:
+            过滤后的标签名称列表
+        """
+        if not deduplicated_tags:
+            return []
+
+        max_weight = max([t['adjustedWeight'] for t in deduplicated_tags])
+
+        result = []
+        for t in deduplicated_tags:
+            # 核心 Tag 始终包含
+            if t.get('isCore'):
+                result.append(t.get('name', ''))
+                continue
+
+            tag_name = t.get('name', '')
+
+            # 技术标签过滤
+            is_tech = (
+                not re.search(r'[\u4e00-\u9fa5]', tag_name) and
+                re.match(r'^[A-Za-z0-9\-_.\s]+$', tag_name)
+            )
+            if is_tech:
+                threshold = config.get('techTagThreshold', self.config.tech_tag_threshold)
+                if t['adjustedWeight'] > max_weight * threshold:
+                    result.append(tag_name)
+            else:
+                threshold = config.get('normalTagThreshold', self.config.normal_tag_threshold)
+                if t['adjustedWeight'] > max_weight * threshold:
+                    result.append(tag_name)
+
+        return [t for t in result if t]
+
     # ==================== 初始化 ====================
     async def initialize(self) -> None:
         """
@@ -123,6 +468,7 @@ class VectorIndex:
         - 初始化全局 Tag 索引
         - 预热日记本名称向量缓存
         - 启动文件监视器
+        - 初始化 TagMemo V3 模块
         """
         logging.info("[VectorIndex] 🚀 Initializing Multi-Index System...")
 
@@ -138,6 +484,22 @@ class VectorIndex:
         # 3. 启动文件监视器
         if self.config.enable_watcher:
             self._start_watcher()
+
+        # 4. 加载 RAG 热调控参数
+        await self.load_rag_params()
+        self._start_rag_params_watcher()
+
+        # 5. 构建 Tag 共现矩阵
+        await self._build_cooccurrence_matrix()
+
+        # 6. 初始化 EPA 模块
+        await self._init_epa_module()
+
+        # 7. 初始化残差金字塔
+        await self._init_residual_pyramid()
+
+        # 8. 初始化结果去重器
+        await self._init_result_deduplicator()
 
         logging.info("[VectorIndex] ✅ System Ready")
 
@@ -436,7 +798,7 @@ class VectorIndex:
         search_vec = vector
         tag_info = None
         if tag_boost > 0 and core_tags:
-            boost_result = self._apply_simple_tag_boost(vector, tag_boost, core_tags)
+            boost_result = self.apply_tag_boost(vector, tag_boost, core_tags, core_boost_factor=1.33)
             search_vec = boost_result.vector
             tag_info = boost_result.info
 
@@ -509,7 +871,7 @@ class VectorIndex:
         search_vec = vector
         tag_info = None
         if tag_boost > 0 and core_tags:
-            boost_result = self._apply_simple_tag_boost(vector, tag_boost, core_tags)
+            boost_result = self.apply_tag_boost(vector, tag_boost, core_tags, core_boost_factor=1.33)
             search_vec = boost_result.vector
             tag_info = boost_result.info
 
@@ -565,6 +927,375 @@ class VectorIndex:
         except Exception as e:
             logging.error(f"[VectorIndex] Search error in \"{diary_name}\": {e}")
             return []
+
+    async def get_chunks_by_file_paths(
+        self,
+        file_paths: List[str]
+    ) -> List[SearchResult]:
+        """
+        根据文件路径列表获取所有分块及其向量信息
+
+        用于时间感知检索中获取时间范围内的所有分块，然后计算相似度排序。
+
+        参考 JavaScript 原版实现：
+        - 批量处理（500 个一批）以避免 SQLite 参数限制
+        - 使用 JOIN 查询 chunks 和 files 表
+        - 直接从数据库返回 vector
+
+        Args:
+            file_paths: 文件路径列表 (格式: "dbName/filename" 或相对路径)
+
+        Returns:
+            分块列表，包含 text, vector, score, source_file 等字段
+        """
+        if not file_paths:
+            return []
+
+        db: Session = SessionLocal()
+        try:
+            # 标准化文件路径格式 (处理 "dbName/filename" 格式)
+            normalized_paths = []
+            for fp in file_paths:
+                if '/' in fp:
+                    parts = fp.split('/', 1)
+                    if len(parts) == 2:
+                        normalized_paths.append(parts[1])  # 只取 filename 部分
+                else:
+                    normalized_paths.append(fp)
+
+            # 批量处理（500 个一批）以避免 SQLite 参数限制
+            batch_size = 500
+            all_results = []
+
+            for i in range(0, len(normalized_paths), batch_size):
+                batch = normalized_paths[i:i + batch_size]
+
+                # 查询所有匹配文件的 chunks
+                chunks = db.query(ChunkTable).join(
+                    DiaryFileTable,
+                    ChunkTable.file_id == DiaryFileTable.id
+                ).filter(
+                    DiaryFileTable.path.in_(batch)
+                ).all()
+
+                for chunk in chunks:
+                    # 解码向量
+                    vector = None
+                    if chunk.vector:
+                        try:
+                            if isinstance(chunk.vector, bytes):
+                                vector = list(np.frombuffer(chunk.vector, dtype=np.float32))
+                            elif isinstance(chunk.vector, list):
+                                vector = chunk.vector
+                            elif isinstance(chunk.vector, str):
+                                import json
+                                vector = json.loads(chunk.vector)
+                        except Exception as e:
+                            logging.debug(f"[VectorIndex] Failed to parse vector for chunk {chunk.id}: {e}")
+
+                    # 创建 SearchResult
+                    result = SearchResult(
+                        text=chunk.content,
+                        score=0.0,  # 初始分数为 0，后续计算相似度
+                        source_file=chunk.file.path if chunk.file else "",
+                        full_path=chunk.file.path if chunk.file else "",
+                        updated_at=chunk.file.updated_at if chunk.file else 0,
+                        matched_tags=[],
+                        boost_factor=0.0,
+                        core_tags_matched=[]
+                    )
+                    # 添加 vector 字段
+                    if vector:
+                        result.__dict__['vector'] = vector
+                    result.__dict__['chunk_id'] = chunk.id
+
+                    all_results.append(result)
+
+            logging.info(f"[VectorIndex] get_chunks_by_file_paths: {len(file_paths)} files -> {len(all_results)} chunks")
+            return all_results
+
+        except Exception as e:
+            logging.error(f"[VectorIndex] get_chunks_by_file_paths error: {e}")
+            return []
+        finally:
+            db.close()
+
+    # ==================== TagMemo V3: 核心增强算法 ====================
+    def _apply_tag_memo_v3(
+        self,
+        vector: Union[List[float], np.ndarray],
+        base_tag_boost: float,
+        core_tags: List[str] = [],
+        core_boost_factor: float = 1.33
+    ) -> TagBoostResult:
+        """
+        TagMemo V3 增强算法 - 完整实现
+
+        整合 EPA、残差金字塔、共现矩阵等多种技术进行智能语义增强
+
+        Args:
+            vector: 原始查询向量
+            base_tag_boost: 基础增强因子 (0-1)
+            core_tags: 核心标签列表
+            core_boost_factor: 核心标签增强因子
+
+        Returns:
+            TagBoostResult 包含增强后的向量和调试信息
+        """
+        try:
+            # Step 1: 向量预处理
+            original_float32 = self._ensure_float32(vector)
+            dim = len(original_float32)
+
+            # 获取配置
+            config = self.rag_params.get('VectorIndex', {})
+
+            # Step 2: EPA 分析
+            epa_result = self.epa.project(original_float32)
+            resonance = self.epa.detect_cross_domain_resonance(original_float32)
+            query_world = (
+                epa_result['dominant_axes'][0]['label']
+                if epa_result['dominant_axes']
+                else 'Unknown'
+            )
+
+            # Step 3: 残差金字塔分析
+            pyramid = self.residual_pyramid.analyze(original_float32)
+            features = pyramid['features']
+
+            # Step 4: 动态调整策略
+            logic_depth = epa_result['logic_depth']
+            entropy_penalty = epa_result['entropy']
+            resonance_boost = np.log1p(resonance['resonance'])
+
+            # 计算动态增强因子
+            act_range = config.get('activationMultiplier', self.config.activation_multiplier)
+            activation_multiplier = (
+                act_range[0] + features['tag_memo_activation'] * (act_range[1] - act_range[0])
+            )
+
+            dynamic_boost_factor = (
+                (logic_depth * (1 + resonance_boost) / (1 + entropy_penalty * 0.5))
+                * activation_multiplier
+            )
+
+            boost_range = config.get('dynamicBoostRange', self.config.dynamic_boost_range)
+            effective_tag_boost = base_tag_boost * np.clip(
+                dynamic_boost_factor, boost_range[0], boost_range[1]
+            )
+
+            # 计算动态核心加权因子
+            core_metric = (logic_depth * 0.5) + ((1 - features['coverage']) * 0.5)
+            core_range = config.get('coreBoostRange', self.config.core_boost_range)
+            # 使用 core_boost_factor 作为基础，然后应用动态调整
+            base_core_boost = core_boost_factor
+            dynamic_core_boost_factor = base_core_boost * (core_range[0] + (
+                core_metric * (core_range[1] - core_range[0])
+            ))
+
+            # Step 5: 收集金字塔 Tags 并应用世界观门控
+            all_tags = []
+            seen_tag_ids = set()
+            safe_core_tags = [t.lower() for t in core_tags if isinstance(t, str)]
+            core_tag_set = set(safe_core_tags)
+
+            levels = pyramid.get('levels', [])
+            for level in levels:
+                tags = level.get('tags', [])
+                for t in tags:
+                    if not t or t.get('id') in seen_tag_ids:
+                        continue
+
+                    tag_name = t.get('name', '').lower() if t.get('name') else ''
+                    is_core = tag_name and tag_name in core_tag_set
+
+                    # 语言置信度补偿
+                    lang_penalty = self._apply_language_compensation(
+                        tag_name, query_world, config
+                    )
+
+                    # 世界观门控
+                    layer_decay = 0.7 ** level.get('level', 0)
+
+                    all_tags.append({
+                        **t,
+                        'adjustedWeight': (
+                            t.get('contribution', t.get('weight', 0))
+                            * layer_decay
+                            * lang_penalty
+                            * (dynamic_core_boost_factor if is_core else 1.0)
+                        ),
+                        'isCore': is_core
+                    })
+                    seen_tag_ids.add(t['id'])
+
+            # Step 6: 逻辑分支拉回（Tag 共现矩阵）
+            if all_tags and self.tag_cooccurrence_matrix:
+                top_tags = sorted(
+                    all_tags, key=lambda x: x['adjustedWeight'], reverse=True
+                )[:5]
+
+                for parent_tag in top_tags:
+                    related = self.tag_cooccurrence_matrix.get(parent_tag['id'], {})
+                    sorted_related = sorted(
+                        related.items(), key=lambda x: x[1], reverse=True
+                    )[:4]
+
+                    for rel_id, _ in sorted_related:
+                        if rel_id not in seen_tag_ids:
+                            all_tags.append({
+                                'id': rel_id,
+                                'adjustedWeight': parent_tag['adjustedWeight'] * 0.5,
+                                'isPullback': True
+                            })
+                            seen_tag_ids.add(rel_id)
+
+            # Step 7: 核心 Tag 补全
+            if core_tag_set:
+                missing_core_tags = [
+                    ct for ct in core_tag_set
+                    if not any(at.get('name', '').lower() == ct for at in all_tags)
+                ]
+
+                if missing_core_tags:
+                    db: Session = SessionLocal()
+                    try:
+                        rows = db.query(TagTable).filter(
+                            TagTable.name.in_(missing_core_tags)
+                        ).all()
+
+                        max_base_weight = (
+                            max([
+                                at['adjustedWeight'] / dynamic_core_boost_factor
+                                for at in all_tags
+                            ]) or 1.0
+                        )
+
+                        for row in rows:
+                            if row.id not in seen_tag_ids:
+                                all_tags.append({
+                                    'id': row.id,
+                                    'name': row.name,
+                                    'adjustedWeight': max_base_weight * dynamic_core_boost_factor,
+                                    'isCore': True,
+                                    'isVirtual': True
+                                })
+                                seen_tag_ids.add(row.id)
+                    finally:
+                        db.close()
+
+            # Step 8: 批量获取向量
+            all_tag_ids = [t['id'] for t in all_tags]
+            db: Session = SessionLocal()
+            try:
+                rows = db.query(TagTable).filter(TagTable.id.in_(all_tag_ids)).all()
+                tag_data_map = {
+                    row.id: {'id': row.id, 'name': row.name, 'vector': row.vector}
+                    for row in rows
+                }
+            finally:
+                db.close()
+
+            # Step 9: 语义去重
+            deduplicated_tags = []
+            sorted_tags = sorted(
+                all_tags, key=lambda x: x['adjustedWeight'], reverse=True
+            )
+
+            dedup_threshold = config.get(
+                'deduplicationThreshold', self.config.deduplication_threshold
+            )
+
+            for tag in sorted_tags:
+                data = tag_data_map.get(tag['id'])
+                if not data or not data.get('vector'):
+                    continue
+
+                vec = np.array(json.loads(data['vector']), dtype=np.float32)
+                is_redundant = False
+
+                for existing in deduplicated_tags:
+                    existing_data = tag_data_map.get(existing['id'])
+                    if not existing_data or not existing_data.get('vector'):
+                        continue
+
+                    existing_vec = np.array(
+                        json.loads(existing_data['vector']), dtype=np.float32
+                    )
+
+                    similarity = float(
+                        np.dot(vec, existing_vec) /
+                        (np.linalg.norm(vec) * np.linalg.norm(existing_vec) + 1e-9)
+                    )
+
+                    if similarity > dedup_threshold:
+                        is_redundant = True
+                        existing['adjustedWeight'] += tag['adjustedWeight'] * 0.2
+                        if tag.get('isCore'):
+                            existing['isCore'] = True
+                        break
+
+                if not is_redundant:
+                    if not tag.get('name'):
+                        tag['name'] = data['name']
+                    deduplicated_tags.append(tag)
+
+            # Step 10: 构建上下文向量并融合
+            context_vec = np.zeros(dim, dtype=np.float32)
+            total_weight = 0
+
+            for t in deduplicated_tags:
+                data = tag_data_map.get(t['id'])
+                if data and data.get('vector'):
+                    v = np.array(json.loads(data['vector']), dtype=np.float32)
+                    context_vec += v * t['adjustedWeight']
+                    total_weight += t['adjustedWeight']
+
+            if total_weight > 0:
+                context_vec /= total_weight
+                norm = np.linalg.norm(context_vec)
+                if norm > 1e-9:
+                    context_vec /= norm
+
+            # 融合
+            fused = (
+                (1 - effective_tag_boost) * original_float32 +
+                effective_tag_boost * context_vec
+            )
+            norm = np.linalg.norm(fused)
+            if norm > 1e-9:
+                fused /= norm
+
+            # 构建结果信息
+            return TagBoostResult(
+                vector=fused.tolist(),
+                info={
+                    'coreTagsMatched': [
+                        t['name'] for t in deduplicated_tags
+                        if t.get('isCore') and t.get('name')
+                    ],
+                    'matchedTags': self._filter_matched_tags(deduplicated_tags, config),
+                    'boostFactor': float(effective_tag_boost),
+                    'epa': {
+                        'logicDepth': float(logic_depth),
+                        'entropy': float(entropy_penalty),
+                        'resonance': float(resonance['resonance'])
+                    },
+                    'pyramid': features
+                }
+            )
+
+        except Exception as e:
+            logging.error(f"[VectorIndex] TagMemo V3 error: {e}, falling back to simple boost")
+            return self._apply_simple_tag_boost(vector, base_tag_boost, core_tags)
+
+    def _ensure_float32(self, vector: Union[List[float], np.ndarray]) -> np.ndarray:
+        """确保向量是 float32 类型"""
+        if isinstance(vector, list):
+            return np.array(vector, dtype=np.float32)
+        elif vector.dtype != np.float32:
+            return vector.astype(np.float32)
+        return vector
 
     def _apply_simple_tag_boost(
         self,
@@ -658,20 +1389,26 @@ class VectorIndex:
         self,
         vector: List[float],
         tag_boost: float,
-        core_tags: List[str]
+        core_tags: List[str],
+        core_boost_factor: float = 1.33
     ) -> TagBoostResult:
         """
-        公共接口：应用 Tag 增强
+        公共接口：应用 TagMemo V3 增强算法
 
         Args:
             vector: 原始向量
-            tag_boost: 增强因子
+            tag_boost: 增强因子 (0-1)
             core_tags: 核心标签列表
+            core_boost_factor: 核心标签增强因子
 
         Returns:
-            TagBoostResult
+            TagBoostResult 包含增强后的向量和调试信息
         """
-        return self._apply_simple_tag_boost(vector, tag_boost, core_tags)
+        if not self.epa or not self.residual_pyramid:
+            # 降级到简单增强
+            return self._apply_simple_tag_boost(vector, tag_boost, core_tags)
+
+        return self._apply_tag_memo_v3(vector, tag_boost, core_tags, core_boost_factor)
 
     # ==================== 3. 添加向量 ====================
     async def add_vector(self, diary_name: str, id: int, vector_buffer: bytes) -> None:
@@ -1197,7 +1934,6 @@ class VectorIndex:
             # 按日记本分组
             updates_by_diary: Dict[str, List[Dict]] = {}
             deletions_by_diary: Dict[str, List[int]] = {}
-            tag_updates = []
 
             db: Session = SessionLocal()
             try:
@@ -1314,6 +2050,9 @@ class VectorIndex:
                 self.file_retry_count.pop(key, None)
 
             logging.info(f"[VectorIndex] ✅ Batch complete. Updated {len(updates_by_diary)} diary indices.")
+
+            # 优化：数据更新后，异步重建共现矩阵
+            asyncio.create_task(self._build_cooccurrence_matrix())
 
         except Exception as e:
             logging.error(f"[VectorIndex] ❌ Batch processing failed: {e}")
