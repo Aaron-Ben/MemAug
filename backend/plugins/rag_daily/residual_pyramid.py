@@ -75,7 +75,7 @@ class ResidualPyramid:
             'max_levels': 3,
             'top_k': 10,
             'min_energy_ratio': 0.1,
-            'dimension': 3072
+            'dimension': 1024
         }
         if config is not None:
             default_config.update(config)
@@ -90,7 +90,7 @@ class ResidualPyramid:
         self.final_residual: Optional[np.ndarray] = None
         self.features: Dict[str, Any] = {}
 
-    def analyze(self, query_vector: np.ndarray, tags: Optional[List[Dict]] = None) -> Dict[str, Any]:
+    def analyze(self, query_vector: np.ndarray) -> Dict[str, Any]:
         """
         Analyze a query vector using the residual pyramid.
 
@@ -99,14 +99,19 @@ class ResidualPyramid:
 
         Args:
             query_vector: Input query vector (numpy array or list)
-            tags: Optional list of tags with vectors. If provided, uses these directly
-                  instead of searching. Each tag should be a dict with 'id', 'name',
-                  and 'vector' keys.
 
         Returns:
             Analysis results dictionary with levels, energy, and features
         """
         logger.info(f"[ResidualPyramid] 🔺 Starting analysis (max_levels={self.config['max_levels']}, top_k={self.config['top_k']})")
+
+        # 诊断日志：检查初始化状态
+        logger.info(
+            f"[ResidualPyramid] 🔧 Initialization Status:\n"
+            f"  ├─ tag_index available: {self.tag_index is not None}\n"
+            f"  ├─ db available: {self.db is not None}\n"
+            f"  └─ dimension: {self._dim}"
+        )
 
         self.levels.clear()
         self.total_explained_energy = 0.0
@@ -127,29 +132,27 @@ class ResidualPyramid:
         current_residual = query_vector.copy()
 
         for level in range(self.config["max_levels"]):
-            # 1. Get tags - either from provided list or search
-            if tags is not None and level == 0:
-                # Use provided tags directly (only for first level)
-                raw_tags = tags[:self.config["top_k"]]
-            else:
-                # Search for tags using current residual
-                residual_bytes = self._vector_to_bytes(current_residual)
-                tag_results = self._search_tags(residual_bytes)
+            # 1. Search for tags using current residual
+            logger.info(f"[ResidualPyramid] 🔎 Level {level}: Searching tags with residual...")
+            residual_bytes = self._vector_to_bytes(current_residual)
+            tag_results = self._search_tags(residual_bytes)
 
-                if not tag_results:
-                    logger.debug(f"[ResidualPyramid] No tags found at level {level}")
-                    break
+            if not tag_results:
+                logger.info(f"[ResidualPyramid] ⚠️ No tag results found at level {level}, stopping")
+                break
 
-                # Get tag vectors from database
-                tag_ids = [r.id for r in tag_results]
-                raw_tags = self._get_tag_vectors(tag_ids)
-
-                # 显示搜索到的标签（最多20个）
-                tag_names = [t.get("name", "") for t in raw_tags[:20]]
-                logger.info(f"[ResidualPyramid] 🔍 Level {level}: Found {len(raw_tags)} tags: {tag_names}")
+            # 2. Get tag vectors from database
+            tag_ids = [r.id for r in tag_results]
+            logger.info(f"[ResidualPyramid] 📥 Fetching vectors for {len(tag_ids)} tag IDs: {tag_ids[:5]}{'...' if len(tag_ids) > 5 else ''}")
+            raw_tags = self._get_tag_vectors(tag_ids)
 
             if not raw_tags:
+                logger.warning(f"[ResidualPyramid] ⚠️ No tag vectors returned from database for IDs: {tag_ids[:5]}")
                 break
+
+            # 显示搜索到的标签（最多20个）
+            tag_names = [t.get("name", "") for t in raw_tags[:20]]
+            logger.info(f"[ResidualPyramid] 🏷️ Level {level}: Found {len(raw_tags)} tags: {tag_names}")
 
             # 3. Compute orthogonal projection using Rust
             projection_result = self._compute_orthogonal_projection(
@@ -172,20 +175,9 @@ class ResidualPyramid:
             # 6. Build tag info list
             tag_info_list = []
             for i, tag in enumerate(raw_tags):
-                # Find corresponding search result if available
-                if tags is not None and level == 0:
-                    # Using provided tags - compute similarity manually
-                    tag_vec = np.frombuffer(tag["vector"], dtype=np.float32)
-                    similarity = float(np.dot(
-                        current_residual.astype(np.float64),
-                        tag_vec.astype(np.float64)
-                    ) / (
-                        np.linalg.norm(current_residual) * np.linalg.norm(tag_vec) + 1e-9
-                    ))
-                else:
-                    # Using search results
-                    search_res = next((r for r in tag_results if r.id == tag["id"]), None)
-                    similarity = search_res.score if search_res else 0.0
+                # Get similarity from search results
+                search_res = next((r for r in tag_results if r.id == tag["id"]), None)
+                similarity = search_res.score if search_res else 0.0
 
                 contribution = projection_result.basis_coefficients[i] if i < len(projection_result.basis_coefficients) else 0.0
                 handshake_mag = handshake_result.magnitudes[i] if i < len(handshake_result.magnitudes) else 0.0
@@ -236,26 +228,61 @@ class ResidualPyramid:
 
         logger.info(f"[ResidualPyramid] ✅ Analysis complete: {len(self.levels)} levels, total_energy={self.total_explained_energy:.2%}")
 
-        # 显示最终特征摘要
-        if self.features:
-            logger.debug(f"[ResidualPyramid] 📊 Features summary: {list(self.features.keys())}")
+        # 📊 残差金字塔分析结果日志
+        logger.info(
+            f"[ResidualPyramid] 📊 Pyramid Analysis Result:\n"
+            f"  ├─ Levels: {len(self.levels)}\n"
+            f"  ├─ Total explained energy: {self.total_explained_energy:.2%}\n"
+            f"  ├─ Final residual: {self._format_vector_preview(current_residual)} (mag={self._magnitude(current_residual):.4f})\n"
+            f"  └─ Features: depth={self.features.get('depth', 0)}, coverage={self.features.get('coverage', 0):.2%}, "
+            f"novelty={self.features.get('novelty', 0):.2%}, coherence={self.features.get('coherence', 0):.2%}"
+        )
+
+        # 🏷️ 提取所有层级标签 (all_tags)
+        all_tags = []
+        for level in self.levels:
+            for tag in level.tags:
+                all_tags.append({
+                    'level': level.level,
+                    'name': tag['name'],
+                    'similarity': tag['similarity'],
+                    'contribution': tag['contribution'],
+                    'handshake_magnitude': tag['handshake_magnitude'],
+                })
+
+        # 按层级分组显示标签
+        logger.info(f"[ResidualPyramid] 🏷️ All Tags Extracted (total={len(all_tags)}):")
+        for level_idx in range(len(self.levels)):
+            level_tags = [t for t in all_tags if t['level'] == level_idx]
+            if level_tags:
+                tags_str = ", ".join([
+                    f"{t['name']}(sim={t['similarity']:.3f}, contrib={t['contribution']:.3f})"
+                    for t in level_tags[:5]
+                ])
+                if len(level_tags) > 5:
+                    tags_str += f" ... +{len(level_tags) - 5} more"
+                logger.info(f"  └─ Level {level_idx}: {tags_str}")
 
         return self._compile_results()
 
     def _search_tags(self, query_bytes: bytes) -> List[Any]:
-        """Search for tags using the VexusIndex."""
+        """Search for tags using the VexusIndex (Rust)."""
         if self.tag_index is None:
+            logger.error("[ResidualPyramid] ❌ tag_index is None, cannot search")
             return []
 
         try:
-            return self.tag_index.search(query_bytes, self.config["top_k"])
+            results = self.tag_index.search(query_bytes, self.config["top_k"])
+            logger.info(f"[ResidualPyramid] 🔍 Tag search returned {len(results)} results")
+            return results
         except Exception as e:
-            logger.warning(f"[ResidualPyramid] Search failed: {e}")
+            logger.error(f"[ResidualPyramid] ❌ Tag search failed: {e}")
             return []
 
     def _get_tag_vectors(self, tag_ids: List[int]) -> List[Dict]:
         """Fetch tag vectors from the database."""
         if self.db is None:
+            logger.warning("[ResidualPyramid] ⚠️ Database connection is None")
             return []
 
         placeholders = ",".join(["?" for _ in tag_ids])
@@ -264,6 +291,7 @@ class ResidualPyramid:
         try:
             cursor = self.db.execute(query, tag_ids)
             rows = cursor.fetchall()
+            logger.debug(f"[ResidualPyramid] 📊 Database query returned {len(rows)} rows")
 
             result = []
             for row in rows:
@@ -274,9 +302,13 @@ class ResidualPyramid:
                         "name": name,
                         "vector": vector_blob,
                     })
+                else:
+                    logger.warning(f"[ResidualPyramid] ⚠️ Tag {tag_id} ({name}) has no vector data")
+
+            logger.info(f"[ResidualPyramid] ✅ Fetched {len(result)} tag vectors with valid data")
             return result
         except Exception as e:
-            logger.warning(f"[ResidualPyramid] Failed to fetch tags: {e}")
+            logger.warning(f"[ResidualPyramid] ⚠️ Failed to fetch tags: {e}")
             return []
 
     def _compute_orthogonal_projection(
@@ -298,6 +330,22 @@ class ResidualPyramid:
         result = self.tag_index.compute_orthogonal_projection(
             vector_bytes, flattened_tags, len(tags)
         )
+
+        # 🔍 EPA投影结果日志
+        projection_vec = np.array(result.projection, dtype=np.float32)
+        residual_vec = np.array(result.residual, dtype=np.float32)
+        projection_preview = self._format_vector_preview(projection_vec)
+        residual_preview = self._format_vector_preview(residual_vec)
+        coefficients_preview = result.basis_coefficients[:2] if len(result.basis_coefficients) > 2 else result.basis_coefficients
+
+        logger.info(
+            f"[ResidualPyramid] 📐 EPA Projection Result:\n"
+            f"  ┌─ Input vector: {self._format_vector_preview(vector)}\n"
+            f"  ├─ Projection: {projection_preview} (mag={self._magnitude(projection_vec):.4f})\n"
+            f"  ├─ Residual: {residual_preview} (mag={self._magnitude(residual_vec):.4f})\n"
+            f"  └─ Basis coefficients: {coefficients_preview} (count={len(result.basis_coefficients)})"
+        )
+
         return result
 
 
@@ -444,15 +492,22 @@ class ResidualPyramid:
 
         return flattened.tobytes()
 
+    def _format_vector_preview(self, vector: np.ndarray) -> str:
+        """Format vector for logging - show only first 2 elements."""
+        if len(vector) > 2:
+            return f"[{vector[0]:.4f}, {vector[1]:.4f}, ...] (dim={len(vector)})"
+        else:
+            return f"[{', '.join(f'{x:.4f}' for x in vector)}]"
+
+    def _magnitude(self, vector: np.ndarray) -> float:
+        """Calculate L2 magnitude of a vector."""
+        return float(np.linalg.norm(vector))
+
     def _vector_to_bytes(self, vector: np.ndarray) -> bytes:
         """Convert numpy vector to bytes for Rust."""
         if vector.dtype != np.float32:
             vector = vector.astype(np.float32)
         return vector.tobytes()
-
-    def _magnitude(self, vector: np.ndarray) -> float:
-        """Calculate L2 magnitude of a vector."""
-        return float(np.linalg.norm(vector))
 
     def _compile_results(self) -> Dict[str, Any]:
         """Compile analysis results into a structured output."""
