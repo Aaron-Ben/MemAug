@@ -93,8 +93,6 @@ class SearchResult:
     updated_at: int = 0                # 更新时间
     matched_tags: List[str] = field(default_factory=list)      # 匹配的标签
     boost_factor: float = 0.0          # 增强因子
-    core_tags_matched: List[str] = field(default_factory=list) # 核心标签匹配
-
 
 @dataclass
 class TagBoostResult:
@@ -134,61 +132,6 @@ class VectorIndex:
         if not store_path.exists():
             store_path.mkdir(parents=True, exist_ok=True)
             logging.info(f"[VectorIndex] Created store path: {store_path}")
-
-    async def load_rag_params(self) -> None:
-        """
-        加载 RAG 热调控参数
-
-        从 rag_params.json 文件加载配置参数，支持运行时热更新
-        """
-        params_path = self.config.rag_params_path or str(self.config.store_path.parent / "rag_params.json")
-        try:
-            path = Path(params_path)
-            if path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
-                    self.rag_params = json.load(f)
-                logging.info(f"[VectorIndex] ✅ RAG 热调控参数已加载: {params_path}")
-            else:
-                logging.warning(f"[VectorIndex] ⚠️ rag_params.json 文件不存在: {params_path}")
-                self.rag_params = {'VectorIndex': {}}
-        except Exception as e:
-            logging.error(f"[VectorIndex] ❌ 加载 rag_params.json 失败: {e}")
-            self.rag_params = {'VectorIndex': {}}
-
-    def _start_rag_params_watcher(self) -> None:
-        """
-        启动参数文件监听器
-
-        使用 watchdog 监听 rag_params.json 文件变化，自动重新加载参数
-        """
-        if self.rag_params_watcher:
-            return
-
-        from watchdog.observers import Observer
-        from watchdog.events import FileSystemEventHandler
-
-        params_path = self.config.rag_params_path or str(self.config.store_path.parent / "rag_params.json")
-
-        class ParamsFileHandler(FileSystemEventHandler):
-            def __init__(self, vector_index):
-                self.vector_index = vector_index
-
-            def on_modified(self, event):
-                if not event.is_directory and event.src_path.endswith(params_path):
-                    logging.info("[VectorIndex] 🔄 检测到 rag_params.json 变更，正在重新加载...")
-                    asyncio.run_coroutine_threadsafe(
-                        self.vector_index.load_rag_params(),
-                        self.vector_index.event_loop
-                    )
-
-        try:
-            observer = Observer()
-            observer.schedule(ParamsFileHandler(self), str(Path(params_path).parent), recursive=False)
-            observer.start()
-            self.rag_params_watcher = observer
-            logging.info(f"[VectorIndex] 👀 RAG 参数文件监听已启动: {params_path}")
-        except Exception as e:
-            logging.warning(f"[VectorIndex] ⚠️ 无法启动参数文件监听: {e}")
 
     async def _init_epa_module(self) -> None:
         """
@@ -383,17 +326,13 @@ class VectorIndex:
         if self.config.enable_watcher:
             self._start_watcher()
 
-        # 4. 加载 RAG 热调控参数
-        await self.load_rag_params()
-        self._start_rag_params_watcher()
-
-        # 5. 构建 Tag 共现矩阵
+        # 4. 构建 Tag 共现矩阵
         await self._build_cooccurrence_matrix()
 
-        # 6. 初始化 EPA 模块
+        # 5. 初始化 EPA 模块
         await self._init_epa_module()
 
-        # 7. 初始化残差金字塔
+        # 6. 初始化残差金字塔
         await self._init_residual_pyramid()
 
         logging.info("[VectorIndex] ✅ System Ready")
@@ -622,7 +561,7 @@ class VectorIndex:
         3. search(query_text, k) - 需要先向量化
 
         Args:
-            arg1: 日记本名称 或 向量 或 查询文本
+            arg1: 日记本名称
             arg2: 向量 或 k 值
             arg3: k 值 或 tag_boost
             arg4: tag_boost
@@ -635,11 +574,10 @@ class VectorIndex:
             query_vec = None
             k = 5
             tag_boost = 0
-            core_tags = []
 
             # 解析参数
             if isinstance(arg1, str) and isinstance(arg2, list):
-                # search(diary_name, vector, k, tag_boost, core_tags)
+                # search(diary_name, vector, k, tag_boost)
                 diary_name = arg1
                 query_vec = arg2
                 k = arg3 if isinstance(arg3, int) else 5
@@ -648,16 +586,15 @@ class VectorIndex:
                 # 纯字符串查询，返回空（需要先向量化）
                 return []
             elif isinstance(arg1, list):
-                # search(vector, k, tag_boost, core_tags)
+                # search(vector, k, tag_boost)
                 query_vec = arg1
                 k = arg2 if isinstance(arg2, int) else 5
                 tag_boost = arg3 if isinstance(arg3, (int, float)) else 0
-                core_tags = arg4 if isinstance(arg4, list) else []
 
             if not query_vec:
                 return []
 
-            return await self._search_specific_index(diary_name, query_vec, k, tag_boost, core_tags or [])
+            return await self._search_specific_index(diary_name, query_vec, k, tag_boost)
 
         except Exception as e:
             logging.error(f"[VectorIndex] Search error: {e}")
@@ -669,7 +606,6 @@ class VectorIndex:
         vector: List[float],
         k: int,
         tag_boost: float,
-        core_tags: List[str]
     ) -> List[SearchResult]:
         """
         在指定日记本索引中搜索
@@ -679,7 +615,6 @@ class VectorIndex:
             vector: 查询向量
             k: 返回结果数量
             tag_boost: 标签增强因子
-            core_tags: 核心标签列表
 
         Returns:
             搜索结果列表
@@ -698,16 +633,13 @@ class VectorIndex:
         search_vec = vector
         tag_info = None
 
-        logging.info(f"[VectorIndex] 🏷️ TagBoost 参数: tag_boost={tag_boost:.3f}, core_tags={len(core_tags) if core_tags else 0}, 启用={'是' if tag_boost > 0 and core_tags else '否'}")
-
-        if tag_boost > 0 and core_tags:
-            logging.info(f"[VectorIndex] ✅ TagBoost 已启用，开始增强向量...")
-            boost_result = self.apply_tag_boost(vector, tag_boost, core_tags, core_boost_factor=1.33)
+        if tag_boost > 0:
+            logging.info(f"[VectorIndex] ✅ TagBoost 已启用，开始增强向量 (diary={diary_name})...")
+            boost_result = self.apply_tag_boost(vector, tag_boost, diary_name)
             search_vec = boost_result.vector
             tag_info = boost_result.info
-            logging.info(f"[VectorIndex] ✅ TagBoost 完成: boost_factor={tag_info.boost_factor:.3f}, matched_tags={len(tag_info.matched_tags)}")
         else:
-            logging.info(f"[VectorIndex] ⏭️ TagBoost 未启用，使用原始向量")
+            logging.info(f"[VectorIndex] ❌ TagBoost 未启用，使用原始向量")
 
         # 维度检查
         if len(search_vec) != self.config.dimension:
@@ -749,117 +681,8 @@ class VectorIndex:
                         updated_at=chunk.file.updated_at,
                         matched_tags=tag_info.matched_tags if tag_info else [],
                         boost_factor=tag_info.boost_factor if tag_info else 0,
-                        core_tags_matched=tag_info.core_tags_matched if tag_info else []
                     ))
             return search_results
-        finally:
-            db.close()
-
-    async def _search_single_index(
-        self,
-        diary_name: str,
-        search_buffer: bytes,
-        k: int
-    ) -> List[Tuple[int, float]]:
-        """搜索单个索引，返回 (chunk_id, score) 列表"""
-        try:
-            idx = await self._get_or_load_diary_index(diary_name)
-            stats = idx.stats()
-            if stats.total_vectors == 0:
-                return []
-            return idx.search(search_buffer, k)
-        except Exception as e:
-            logging.error(f"[VectorIndex] Search error in \"{diary_name}\": {e}")
-            return []
-
-    async def get_chunks_by_file_paths(
-        self,
-        file_paths: List[str]
-    ) -> List[SearchResult]:
-        """
-        根据文件路径列表获取所有分块及其向量信息
-
-        用于时间感知检索中获取时间范围内的所有分块，然后计算相似度排序。
-
-        - 批量处理（500 个一批）以避免 SQLite 参数限制
-        - 使用 JOIN 查询 chunks 和 files 表
-        - 直接从数据库返回 vector
-
-        Args:
-            file_paths: 文件路径列表 (格式: "dbName/filename" 或相对路径)
-
-        Returns:
-            分块列表，包含 text, vector, score, source_file 等字段
-        """
-        if not file_paths:
-            return []
-
-        db: Session = SessionLocal()
-        try:
-            # 标准化文件路径格式 (处理 "dbName/filename" 格式)
-            normalized_paths = []
-            for fp in file_paths:
-                if '/' in fp:
-                    parts = fp.split('/', 1)
-                    if len(parts) == 2:
-                        normalized_paths.append(parts[1])  # 只取 filename 部分
-                else:
-                    normalized_paths.append(fp)
-
-            # 批量处理（500 个一批）以避免 SQLite 参数限制
-            batch_size = 500
-            all_results = []
-
-            for i in range(0, len(normalized_paths), batch_size):
-                batch = normalized_paths[i:i + batch_size]
-
-                # 查询所有匹配文件的 chunks
-                chunks = db.query(ChunkTable).join(
-                    DiaryFileTable,
-                    ChunkTable.file_id == DiaryFileTable.id
-                ).filter(
-                    DiaryFileTable.path.in_(batch)
-                ).all()
-
-                for chunk in chunks:
-                    # 解码向量
-                    vector = None
-                    if chunk.vector:
-                        try:
-                            if isinstance(chunk.vector, bytes):
-                                vector = list(np.frombuffer(chunk.vector, dtype=np.float32))
-                            elif isinstance(chunk.vector, list):
-                                vector = chunk.vector
-                            elif isinstance(chunk.vector, str):
-                                import json
-                                vector = json.loads(chunk.vector)
-                        except Exception as e:
-                            logging.debug(f"[VectorIndex] Failed to parse vector for chunk {chunk.id}: {e}")
-
-                    # 创建 SearchResult
-                    result = SearchResult(
-                        text=chunk.content,
-                        score=0.0,  # 初始分数为 0，后续计算相似度
-                        source_file=chunk.file.path if chunk.file else "",
-                        full_path=chunk.file.path if chunk.file else "",
-                        updated_at=chunk.file.updated_at if chunk.file else 0,
-                        matched_tags=[],
-                        boost_factor=0.0,
-                        core_tags_matched=[]
-                    )
-                    # 添加 vector 字段
-                    if vector:
-                        result.__dict__['vector'] = vector
-                    result.__dict__['chunk_id'] = chunk.id
-
-                    all_results.append(result)
-
-            logging.info(f"[VectorIndex] get_chunks_by_file_paths: {len(file_paths)} files -> {len(all_results)} chunks")
-            return all_results
-
-        except Exception as e:
-            logging.error(f"[VectorIndex] get_chunks_by_file_paths error: {e}")
-            return []
         finally:
             db.close()
 
@@ -1201,39 +1024,6 @@ class VectorIndex:
             logging.info(f"[VectorIndex] ✅ Hydrated {count} diary name vectors")
         finally:
             db.close()
-
-    async def get_diary_name_vector(self, diary_name: str) -> Optional[List[float]]:
-        """
-        获取日记本名称的向量（带缓存）
-
-        Args:
-            diary_name: 日记本名称
-
-        Returns:
-            向量列表或 None
-        """
-        if not diary_name:
-            return None
-
-        # 检查缓存
-        if diary_name in self.diary_name_vector_cache:
-            return self.diary_name_vector_cache[diary_name]
-
-        # 从数据库查找
-        db: Session = SessionLocal()
-        try:
-            entry = db.query(KVStoreTable).filter(
-                KVStoreTable.key == f"diary_name:{diary_name}"
-            ).first()
-            if entry and entry.vector:
-                vector = json.loads(entry.vector)
-                self.diary_name_vector_cache[diary_name] = vector
-                return vector
-        finally:
-            db.close()
-
-        # 缓存未命中，获取新向量
-        return await self._fetch_and_cache_diary_name_vector(diary_name)
 
     async def _fetch_and_cache_diary_name_vector(self, name: str) -> Optional[List[float]]:
         """获取并缓存日记本名称向量"""
@@ -1750,48 +1540,6 @@ class VectorIndex:
 
         return {"queued": len(txt_files), "total": len(txt_files)}
 
-    async def rebuild_index_from_db(
-        self,
-        diary_name: str
-    ) -> None:
-        """
-        从数据库重建向量索引
-
-        Args:
-            diary_name: 日记本名称（角色名称）
-        """
-        logging.info(f"[VectorIndex] Rebuilding index for diary: {diary_name}")
-
-        db: Session = SessionLocal()
-        try:
-            # 查询所有chunks
-            chunks = db.query(ChunkTable).join(DiaryFileTable).filter(
-                DiaryFileTable.diary_name == diary_name
-            ).order_by(ChunkTable.chunk_index).all()
-
-            if not chunks:
-                logging.warning(f"[VectorIndex] No chunks found for diary: {diary_name}")
-                return
-
-            # 准备向量数据
-            vector_tuples = []
-            for chunk in chunks:
-                try:
-                    vector = json.loads(chunk.vector)
-                    vector_bytes = self._serialize_vector(vector)
-                    # 使用 chunk.id 作为向量ID
-                    vector_tuples.append((chunk.id, vector_bytes))
-                except (json.JSONDecodeError, TypeError) as e:
-                    logging.warning(f"[VectorIndex] Failed to parse vector for chunk {chunk.id}: {e}")
-
-            if vector_tuples:
-                # 批量添加向量（会自动触发索引加载）
-                await self.add_vectors(diary_name, vector_tuples)
-                logging.info(f"[VectorIndex] Rebuilt index with {len(vector_tuples)} vectors")
-
-        finally:
-            db.close()
-
     # ==================== 辅助方法 ====================
 
     def _serialize_vector(self, vector: List[float]) -> bytes:
@@ -1805,30 +1553,6 @@ class VectorIndex:
             序列化后的bytes
         """
         return struct.pack(f'{len(vector)}f', *vector)
-
-    async def _vectorize_chunks(
-        self,
-        chunks: List[str]
-    ) -> List[Optional[List[float]]]:
-        """
-        批量向量化文本块
-
-        Args:
-            chunks: 文本块列表
-
-        Returns:
-            向量列表（失败的项为None）
-        """
-        if not chunks:
-            return []
-
-        try:
-            async with EmbeddingService() as embedding_service:
-                vectors = await embedding_service.get_embeddings_batch(chunks)
-                return vectors
-        except Exception as e:
-            logging.error(f"[VectorIndex] Vectorization failed: {e}")
-            return [None] * len(chunks)
 
     async def _process_file_tags(
         self,
@@ -1947,17 +1671,6 @@ class VectorIndex:
 
     # ==================== 原有辅助方法 ====================
 
-    async def flush_all(self) -> None:
-        """立即保存所有待保存的索引"""
-        logging.info("[VectorIndex] 💾💾 Flushing all pending saves...")
-        for diary_name, task in list(self.save_tasks.items()):
-            if task is not None:
-                task.cancel()
-                del self.save_tasks[diary_name]
-                await self._save_index_to_disk(diary_name)
-        logging.info("[VectorIndex] ✅ All indices saved.")
-
-
     async def _handle_delete(self, file_path: str) -> None:
         """
         处理文件删除：从数据库和向量索引中移除
@@ -2003,7 +1716,6 @@ class VectorIndex:
             db.rollback()
         finally:
             db.close()
-
 
 # ==================== 统一同步服务 ====================
 

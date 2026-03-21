@@ -387,8 +387,7 @@ class PluginManager:
                 # 读取 commandIdentifier 字段（支持旧版 command 字段作为后备）
                 subcommand = cmd.get("commandIdentifier") or cmd.get("command", "")
                 if subcommand:
-                    # 构建完整的工具名，例如 "DailyNote.create"
-                    full_tool_name = f"{plugin_name}.{subcommand}"
+                    full_tool_name = plugin_name
                     additional_args = {"command": subcommand}
 
                     # 注册别名映射
@@ -447,13 +446,8 @@ class PluginManager:
             if invocation_commands:
                 # Build tool description
                 for cmd in invocation_commands:
-                    # 读取 commandIdentifier 字段（支持旧版 command 字段作为后备）
-                    subcommand = cmd.get('commandIdentifier') or cmd.get('command')
-                    if subcommand:
-                        # 构建完整的工具名，例如 "DailyNote.create"
-                        cmd_name = f"{name}.{subcommand}"
-                    else:
-                        cmd_name = name
+                    # 直接使用插件名作为工具名
+                    cmd_name = name
 
                     cmd_desc = cmd.get('description', '')
                     cmd_example = cmd.get('example', '')

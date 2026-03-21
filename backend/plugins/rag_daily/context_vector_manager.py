@@ -132,10 +132,11 @@ class ContextVectorManager:
                 return entry['vector']
         return None
 
-    def update_context(
+    async def update_context(
         self,
         messages: List[Dict],
         embedding_cache: Optional[Dict[str, np.ndarray]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         更新上下文映射
@@ -143,7 +144,7 @@ class ContextVectorManager:
         Args:
             messages: 当前会话的消息数组
             embedding_cache: Embedding 缓存字典 {content: vector}
-            allow_api: 是否允许 API 调用获取新向量（当前实现未使用）
+            options: 选项字典，支持 allow_api
         """
         logger.info(f"[ContextVectorManager] 🔄 Updating context with {len(messages)} messages...")
 
@@ -151,7 +152,7 @@ class ContextVectorManager:
             logger.warning("[ContextVectorManager] ⚠️ Messages is not a list, skipping update")
             return
 
-        options = options or {}                                                                                                                   
+        options = options or {}
         allow_api = options.get('allow_api', False)                                                                                             
                                                                                                                                                     
         new_assistant_vectors = []

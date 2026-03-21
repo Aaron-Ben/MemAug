@@ -564,13 +564,10 @@ class EPAModule:
 
         dominant_axes.sort(key=lambda x: x["energy"], reverse=True)
 
-        logger.info(f"[EPA] ✅ Projection complete: entropy={normalized_entropy:.3f}, dominant_axes={len(dominant_axes)}")
-
-        # 显示召回的标签（最多20个）
-        if dominant_axes:
-            top_labels = [ax['label'] for ax in dominant_axes[:20]]
-            logger.info(f"[EPA] 🏷️ Recalled {len(top_labels)} tags (max 20): {top_labels}")
-            logger.debug(f"[EPA] 📊 Top axes details: {dominant_axes[:5]}")
+        # 打印 basisLabels 和 basisEnergies
+        logger.info(f"[EPA] 📋 语义坐标标签: {self.basis_labels}")
+        if self.basis_energies is not None:
+            logger.info(f"[EPA] ⚡ 语义坐标重要性: {self.basis_energies.tolist()}")
 
         return {
             "projections": projections,

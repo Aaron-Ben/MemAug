@@ -270,30 +270,6 @@ class RAGDiaryPlugin:
         """
         return 1 / (1 + math.exp(-x))
 
-    def _truncate_core_tags(self, tags: List[str], ratio: float, metrics: Dict[str, float]) -> List[str]:
-        """
-        截断核心标签列表
-        :param tags: 标签列表
-        :param ratio: 截断比例
-        :param metrics: 包含 L 和 S 值的指标字典
-        :return: 截断后的标签列表
-        """
-        # 如果标签较少（<=5个），不进行截断，保留原始语义
-        if not tags or len(tags) <= 5:
-            return tags
-
-        # 动态计算保留数量，最小保留 5 个（除非原始数量不足）
-        target_count = max(5, math.ceil(len(tags) * ratio))
-        truncated = tags[:target_count]
-
-        if len(truncated) < len(tags):
-            logger.info(
-                f"[Truncation] {len(tags)} -> {len(truncated)} tags "
-                f"(Ratio: {ratio:.2f}, L:{metrics['L']:.2f}, S:{metrics['S']:.2f})"
-            )
-
-        return truncated
-
     # ==================== Phase 1: Core Infrastructure ====================
 
     async def get_single_embedding(self, text: str) -> Optional[List[float]]:
@@ -434,7 +410,7 @@ class RAGDiaryPlugin:
 
     # ==================== Phase 2: Text Processing Tools ====================
 
-    def _strip_tool_markers(text):
+    def _strip_tool_markers(self, text):
         """
         清理工具调用标记文本，过滤黑名单关键词，提取有效内容
         """
@@ -508,6 +484,7 @@ class RAGDiaryPlugin:
     async def process_messages(
         self,
         messages: List[Dict[str, Any]],
+        plugin_config: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         处理消息并执行 RAG 检索
@@ -760,7 +737,7 @@ class RAGDiaryPlugin:
 
         processed_content = content
 
-        rag_matches = list(re.findall(r'\[\[(.*?)日记本(.*?)\]\]', content))
+        rag_matches = list(re.finditer(r'\[\[(.*?)日记本(.*?)\]\]', content))
         processing_task = []
 
         for match in rag_matches:
@@ -785,7 +762,6 @@ class RAGDiaryPlugin:
                         ai_content=ai_content,  # 传递 ai_content
                         dynamic_k=dynamic_k,
                         time_ranges=time_ranges,
-                        allow_time_and_group=True,
                         default_tag_weight=dynamic_tag_weight
                     )
                     return (ph, retrieved_content)
@@ -815,8 +791,9 @@ class RAGDiaryPlugin:
         modifiers: str,
         query_vector: List[float],
         user_content: str,
-        dynamic_k: int,
-        time_ranges: List[TimeRange],
+        ai_content: str = "",
+        dynamic_k: int = 5,
+        time_ranges: Optional[List[TimeRange]] = None,
         default_tag_weight: float = 0.15,
     ) -> str:
         """
@@ -830,7 +807,6 @@ class RAGDiaryPlugin:
             combined_query_for_display: 组合查询（用于显示）
             dynamic_k: 动态 K 值
             time_ranges: 时间范围列表
-            allow_time_and_group: 是否允许时间和分组
             default_tag_weight: 默认 Tag 权重
 
         Returns:
@@ -901,7 +877,7 @@ class RAGDiaryPlugin:
                     user_content, search_results, final_k
                 )
 
-            final_results = [r | {'source': 'rag'} for r in search_results]
+            final_results = [{**vars(r), 'source': 'rag'} for r in search_results]
             retrieved_content = self.format_standard_results(
                 search_results, display_name, metadata
             )
