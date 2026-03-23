@@ -515,6 +515,7 @@ class RAGDiaryPlugin:
             logger.info("[RAGDiaryPlugin] Processing messages for RAG...")
 
             # 1. 识别需要处理的 system 消息（包含日记本占位符）
+            import re  # 确保 re 模块可用
             target_system_message_indices = []
             for i, msg in enumerate(messages):
                 if msg.get('role') == 'system':
@@ -526,6 +527,12 @@ class RAGDiaryPlugin:
 
             # 如果没有找到任何需要处理的 system 消息，则直接返回
             if not target_system_message_indices:
+                logger.warning("[RAGDiaryPlugin] ⚠️ No system message with [[日记本]] placeholder found!")
+                # 打印所有 system 消息的内容帮助调试
+                for i, msg in enumerate(messages):
+                    if msg.get('role') == 'system':
+                        content = msg.get('content', '')
+                        logger.warning(f"[RAGDiaryPlugin]   System message {i}: {content[:200]}...")
                 return messages
 
             last_user_message_index = -1
@@ -688,6 +695,13 @@ class RAGDiaryPlugin:
                 )
 
                 new_messages[index]['content'] = processed_content
+
+            # 调试：打印返回的消息内容
+            for i, msg in enumerate(new_messages):
+                if msg.get('role') == 'system':
+                    content = msg.get('content', '')
+                    has_rag_block = 'RAG_BLOCK_START' in content
+                    logger.info(f"[RAGDiaryPlugin] 📤 Returning system message {i}: has_rag_block={has_rag_block}, content_length={len(content)}")
 
             return new_messages
 
@@ -1329,8 +1343,6 @@ class RAGDiaryPlugin:
 
         result = f'<!-- RAG_BLOCK_START {metadata_string} -->{inner_content}<!-- RAG_BLOCK_END -->'
         logger.info(f"[RAGDiary] ✅ 格式化完成，结果长度: {len(result)} 字符")
-        logger.info(f"[RAGDiary] 📄 最终注入格式:\n{result}")
-        logger.info(f"[RAGDiary] ═══════════════════════════════════════════════════════════")
         return result
 
     def format_combined_time_aware_results(
@@ -1420,11 +1432,7 @@ class RAGDiaryPlugin:
         metadata_string = json.dumps(metadata, ensure_ascii=False).replace('-->', '--\\>')
 
         result = f'<!-- RAG_BLOCK_START {metadata_string} -->{inner_content}<!-- RAG_BLOCK_END -->'
-
         logger.info(f"[RAGDiary] ✅ 格式化完成，结果长度: {len(result)} 字符")
-        logger.info(f"[RAGDiary] 📄 最终注入格式:\n{result}")
-        logger.info(f"[RAGDiary] ═══════════════════════════════════════════════════════════")
-
         return result
 
 

@@ -274,7 +274,18 @@ class ChatService:
                     messages
                 )
                 messages = processed_messages
-                logger.info(f"[RAG] Messages processed by RAGDiaryPlugin")
+
+                # 调试：检查处理后的消息
+                has_rag = any('RAG_BLOCK_START' in str(m.get('content', '')) for m in messages)
+                logger.info(f"[RAG] Messages processed by RAGDiaryPlugin, has_rag_block={has_rag}")
+
+                # 打印 system 消息中的 RAG 内容
+                for i, m in enumerate(messages):
+                    if m.get('role') == 'system':
+                        content = str(m.get('content', ''))
+                        if 'RAG_BLOCK_START' in content:
+                            logger.info(f"[RAG] System message {i} has RAG block, content_length={len(content)}")
+
             except Exception as e:
                 logger.warning(f"[RAG] Failed to process messages: {e}")
 
