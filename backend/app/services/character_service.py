@@ -22,7 +22,7 @@ from app.models.character import Character
 logger = logging.getLogger(__name__)
 
 
-# Default directories
+# Default directories（指向项目根目录的 data 文件夹）
 DEFAULT_CHARACTERS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "characters"
 DEFAULT_DAILY_DIR = Path(__file__).parent.parent.parent.parent / "data" / "daily"
 

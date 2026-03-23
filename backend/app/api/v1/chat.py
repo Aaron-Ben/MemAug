@@ -9,7 +9,12 @@ import os
 
 from app.services.llm import LLM
 from app.services.character_service import CharacterService
-from app.services.chat_service import ChatService
+# Load ChatService based on MEMORY env
+memory_mode = os.getenv("MEMORY", "v1")
+if memory_mode == "v0":
+    from app.services.chat_service_v0 import ChatServiceV0 as ChatService
+else:
+    from app.services.chat_service_v1 import ChatService
 from app.services.chat_history_service import ChatHistoryService
 from app.models.character import UserCharacterPreference
 from app.schemas.message import ChatRequest, ChatResponse
@@ -120,18 +125,26 @@ async def chat(
     # Load conversation history from topic
     history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
 
-    # Create chat service with plugin manager
-    chat_service = ChatService(
-        llm=llm,
-        character_service=character_service,
-        plugin_manager=plugin_manager
-    )
+    # Create chat service based on memory mode
+    if memory_mode == "v0":
+        chat_service = ChatService(
+            llm=llm,
+            character_service=character_service
+        )
+    else:
+        chat_service = ChatService(
+            llm=llm,
+            character_service=character_service,
+            plugin_manager=plugin_manager
+        )
 
     # Generate response
     try:
         # Ensure plugins are loaded
-        if not plugin_manager.plugins:
-            await plugin_manager.load_plugins()
+        # Load plugins only for v1 mode
+        if memory_mode != "v0":
+            if not plugin_manager.plugins:
+                await plugin_manager.load_plugins()
 
         # Create modified request with history
         request_with_history = ChatRequest(
@@ -223,12 +236,18 @@ async def chat_stream(
     # Load conversation history from topic
     history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
 
-    # Create chat service with plugin manager
-    chat_service = ChatService(
-        llm=llm,
-        character_service=character_service,
-        plugin_manager=plugin_manager
-    )
+    # Create chat service based on memory mode
+    if memory_mode == "v0":
+        chat_service = ChatService(
+            llm=llm,
+            character_service=character_service
+        )
+    else:
+        chat_service = ChatService(
+            llm=llm,
+            character_service=character_service,
+            plugin_manager=plugin_manager
+        )
 
     # Store full response for diary generation and saving
     full_response = []

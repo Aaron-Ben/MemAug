@@ -17,8 +17,10 @@ from datetime import datetime
 
 # --- Configuration ---
 # 默认角色目录和日记目录
-DEFAULT_CHARACTERS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "characters"
-DEFAULT_DAILY_DIR = Path(__file__).parent.parent.parent.parent / "data" / "daily"
+DEFAULT_CHARACTERS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "data" / "characters"
+# 项目根目录是 backend/ 的父目录 (向上 6 级)
+_project_root = Path(__file__).parent.parent.parent.parent.parent.parent
+DEFAULT_DAILY_DIR = _project_root / "data" / "daily"
 
 
 def get_characters_dir() -> Path:
@@ -275,7 +277,6 @@ def handle_update(args):
 
         # 构建搜索顺序
         priority_names = []
-        other_names = []
 
         # 获取所有日记目录
         if not daily_dir.exists():
@@ -289,30 +290,24 @@ def handle_update(args):
             if d.is_dir()
         ]
 
-        if maid:
-            # 解析 maid 获取 character_id
-            character_id = maid.strip()
-            tag_match = re.match(r'^\[(.*?)\](.*)$', character_id)
-            if tag_match:
-                character_id = tag_match.group(2).strip()
+        # 解析 maid 获取 character_id
+        character_id = maid.strip()
+        tag_match = re.match(r'^\[(.*?)\](.*)$', character_id)
+        if tag_match:
+            character_id = tag_match.group(2).strip()
 
-            # 获取角色名称
-            character_meta = get_character_metadata(character_id, characters_dir)
-            character_name = character_meta.get("name", character_id) if character_meta else character_id
-            sanitized_name = sanitize_path_component(character_name)
+        # 获取角色名称
+        character_meta = get_character_metadata(character_id, characters_dir)
+        character_name = character_meta.get("name", character_id) if character_meta else character_id
+        sanitized_name = sanitize_path_component(character_name)
 
-            # 优先搜索指定的角色名称目录
-            for dir_entry in all_daily_dirs:
-                if dir_entry.name == sanitized_name:
-                    priority_names.append(dir_entry)
-                else:
-                    other_names.append(dir_entry)
-        else:
-            # 搜索所有目录
-            other_names = all_daily_dirs
+        # 优先搜索指定的角色名称目录
+        for dir_entry in all_daily_dirs:
+            if dir_entry.name == sanitized_name:
+                priority_names.append(dir_entry)
 
         # 合并搜索顺序：优先目录在前
-        directories_to_scan = priority_names + other_names
+        directories_to_scan = priority_names
 
         if not directories_to_scan:
             return {

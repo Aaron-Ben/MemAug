@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
 
-from app.services.diary.file_service import DiaryFileService
+from memory.v1.services.diary import DiaryFileService
 from app.models.diary import DiaryEntry
 from memory.v1.plugin_manager import plugin_manager
 

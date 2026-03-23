@@ -15,9 +15,9 @@ from app.services.character_service import CharacterService
 logger = logging.getLogger(__name__)
 
 
-# 默认目录
-DEFAULT_CHARACTERS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "characters"
-DEFAULT_DAILY_DIR = Path(__file__).parent.parent.parent.parent / "data" / "daily"
+# 默认目录（指向项目根目录的 data 文件夹）
+DEFAULT_CHARACTERS_DIR = Path(__file__).parent.parent.parent.parent.parent / "data" / "characters"
+DEFAULT_DAILY_DIR = Path(__file__).parent.parent.parent.parent.parent / "data" / "daily"
 
 
 def get_characters_dir() -> Path:

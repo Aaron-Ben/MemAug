@@ -1391,6 +1391,15 @@ class VectorIndex:
                         idx_path = self.config.store_path / f"index_diary_{safe_name}.usearch"
                         index_exists = idx_path.exists()
 
+                        # 获取角色信息 (在判断前获取)
+                        character_service = CharacterService()
+                        character = character_service.get_character_by_name(character_name)
+                        if not character:
+                            logging.warning(f"[VectorIndex] ❌ Character not found: {character_name}")
+                            self.pending_files.discard(key)
+                            self.file_retry_count.pop(key, None)
+                            continue
+
                         if existing and existing.checksum == checksum and index_exists:
                             # 文件未变化且索引存在，跳过
                             self.pending_files.discard(key)
@@ -1403,17 +1412,14 @@ class VectorIndex:
                         elif existing and existing.checksum == checksum and not index_exists:
                             # 文件未变化但索引不存在，需要重建索引
                             logging.info(f"[VectorIndex] 🔄 Index missing for {file_path}, forcing rebuild...")
+                            # 强制加入处理队列进行索引重建
 
-                        # 获取角色信息
-                        character_service = CharacterService()
-                        character = character_service.get_character_by_name(character_name)
-                        if not character:
-                            logging.warning(f"[VectorIndex] ❌ Character not found: {character_name}")
-                            self.pending_files.discard(key)
-                            self.file_retry_count.pop(key, None)
-                            continue
-
-                        files_to_process.append({
+                        # 加入待处理列表的条件：
+                        # 1. 文件不存在
+                        # 2. 文件已变化 (checksum 不同)
+                        # 3. 索引文件不存在 (即使 checksum 相同，也需要重建)
+                        if not existing or existing.checksum != checksum or not index_exists:
+                            files_to_process.append({
                             "key": key,
                             "character_name": character_name,
                             "file_path": file_path,
@@ -1845,7 +1851,7 @@ class VectorIndex:
         sanitized = sanitized or 'unnamed'
 
         current_file = Path(__file__)
-        project_root = current_file.parent.parent.parent
+        project_root = current_file.parent.parent.parent.parent
         return project_root / "data" / "daily" / sanitized
 
     def _calculate_checksum(self, content: str) -> str:

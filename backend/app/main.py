@@ -53,7 +53,7 @@ file_handler = DailyFileHandler()
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
 
 # Add file handler to loggers
-for logger_name in ["app.services.chat_service", "plugins.tool_executor", "plugins.plugin", "plugins.tool_call_parser", "app.api.v1.chat", "app.api.v1.diary", "app.vector_index"]:
+for logger_name in ["app.services.chat_service_v0", "app.services.chat_service_v1", "plugins.tool_executor", "plugins.plugin", "plugins.tool_call_parser", "app.api.v1.chat", "app.api.v1.diary", "app.vector_index"]:
     logger = logging.getLogger(logger_name)
     logger.addHandler(file_handler)
     # Also add console handler so logs appear in terminal
@@ -80,7 +80,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"❌ VectorIndex 初始化失败: {e}")
 
-    # Load plugins (现在 vector_db_manager 已经可用)
     try:
         await plugin_manager.load_plugins()
         print(f"Plugins loaded: {list(plugin_manager.plugins.keys())}")
