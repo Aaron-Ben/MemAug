@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 from datetime import datetime
+from uuid import uuid4
 
 
 class MemoryCategory(str, Enum):
@@ -27,15 +28,27 @@ class CandidateMemory:
         if self.created_at is None:
             self.created_at = datetime.now()
 
+@dataclass
+class MergedMemoryPayload:
+    """Structured merged memory payload returned by one LLM call."""
+
+    abstract: str
+    overview: str
+    content: str
+    reason: str = ""
 
 @dataclass
 class MemoryContext:
     """存储到向量数据库的记忆上下文"""
-    id: str
-    uri: str                    # 如: memories/entities/mem_xxx.md
-    category: str
-    abstract: str               # L0
-    overview: str               # L1
-    content: str                # L2 (向量化内容)
-    level: int                  # 0=abstract, 1=overview, 2=detail
+    id: str = field(default_factory=lambda: str(uuid4()))
+    uri: str = ""                    # 如: memories/entities/mem_xxx.md
+    parent_uri: str = ""
+    category: str = ""
+    abstract: str = ""               # L0
+    overview: str = ""               # L1
+    content: str = ""                # L2 (向量化内容)
+    level: int = 2                  # 0=abstract, 1=overview, 2=detail
     vector: Optional[list] = None
+    session_id: str = ""
+    user: str = ""
+    is_leaf: bool = True
