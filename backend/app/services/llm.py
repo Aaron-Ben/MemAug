@@ -1,15 +1,27 @@
 """LLM API."""
 
+import asyncio
 import json
 import os
 import logging
 from typing import Dict, List, Optional, Union
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from app.utils.json import extract_json
 
 logger = logging.getLogger(__name__)
+
+# LLM 单例
+_llm_instance: Optional["LLM"] = None
+
+
+def get_llm() -> "LLM":
+    """获取 LLM 单例实例"""
+    global _llm_instance
+    if _llm_instance is None:
+        _llm_instance = LLM()
+    return _llm_instance
 
 
 class LLMConfig:
@@ -79,6 +91,13 @@ class LLM:
         import httpx
         timeout = httpx.Timeout(self.config.timeout, connect=10.0)
         self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=self.config.max_retries
+        )
+        # 异步客户端
+        self.async_client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
@@ -212,8 +231,48 @@ class LLM:
             logger.error(f"[LLM] API error: {type(e).__name__}: {e}")
             raise
 
-        for chunk in stream:
-            if chunk.choices and len(chunk.choices) > 0:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "content") and delta.content:
-                    yield delta.content
+    async def generate_response_async(
+        self,
+        messages: List[Dict[str, str]],
+        response_format=None,
+        tools: Optional[List[Dict]] = None,
+        tool_choice: str = "auto",
+        **kwargs,
+    ) -> str:
+        """
+        Generate a response asynchronously.
+
+        Args:
+            messages: List of message dicts containing 'role' and 'content'.
+            response_format: Optional format (e.g., {"type": "json_object"})
+            tools: Optional list of tools that the model can call.
+            tool_choice: Tool choice method (default: "auto").
+            **kwargs: Additional parameters.
+
+        Returns:
+            The generated response.
+        """
+        params = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_tokens,
+            "top_p": self.config.top_p,
+            **kwargs,
+        }
+
+        if response_format:
+            params["response_format"] = response_format
+
+        if tools:
+            params["tools"] = tools
+            params["tool_choice"] = tool_choice
+
+        logger.info(f"[LLM] Starting async request to {self.config.model}")
+        try:
+            response = await self.async_client.chat.completions.create(**params)
+            logger.info(f"[LLM] Async request completed successfully")
+            return self._parse_response(response, tools)
+        except Exception as e:
+            logger.error(f"[LLM] Async request error: {type(e).__name__}: {e}", exc_info=True)
+            raise
