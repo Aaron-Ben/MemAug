@@ -18,21 +18,6 @@ for env_path in env_paths:
         load_dotenv(env_path, override=True)
         break
 
-# 记忆系统后端选择 (默认 v1)
-MEMORY_BACKEND = os.getenv("MEMORY", "v1")
-print(f"[Main] Memory backend: {MEMORY_BACKEND}")
-
-# Load environment variables from .env file (try multiple locations)
-env_paths = [
-    Path(__file__).parent.parent / ".env",  # Backend directory
-    Path(__file__).parent.parent.parent / ".env",  # Project root
-]
-# Try to load from backend directory first, then project root
-for env_path in env_paths:
-    if env_path.exists():
-        load_dotenv(env_path, override=True)
-        break
-
 from app.api.v1 import character, chat, diary, chat_history
 from app.services.character_service import CharacterStorageService
 from app.models.database import init_db
@@ -69,35 +54,19 @@ async def lifespan(app: FastAPI):
     init_db()
     print("Database initialized successfully")
 
-    # ✅ 先初始化 VectorIndex，再加载插件（修复初始化顺序问题）
-    from app.vector_index import initialize_vector_index
-    from memory.v1.plugin_manager import plugin_manager
+    # 使用工厂模式初始化记忆系统后端
+    from memory import MemoryBackendFactory
 
-    try:
-        vector_index = await initialize_vector_index()
-        plugin_manager.set_vector_db_manager(vector_index)
-        print("✅ VectorIndex 已初始化并注入到 plugin_manager")
-    except Exception as e:
-        print(f"❌ VectorIndex 初始化失败: {e}")
+    backend = MemoryBackendFactory.get_backend()
+    print(f"[Main] Memory backend: {backend.name}")
 
-    try:
-        await plugin_manager.load_plugins()
-        print(f"Plugins loaded: {list(plugin_manager.plugins.keys())}")
-    except Exception as e:
-        print(f"Failed to load plugins: {e}")
+    # 初始化 backend
+    await backend.initialize(app)
 
     # Ensure logs directory exists
     from app.utils.file_logger import LOGS_DIR
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"File logging enabled: {LOGS_DIR}/today.txt")
-
-    # 启动时自动同步所有角色的日记到向量索引
-    try:
-        from app.vector_index import sync_all_diaries_to_vector_index
-        logger.info("🚀 启动时自动同步向量索引...")
-        await sync_all_diaries_to_vector_index()
-    except Exception as e:
-        logger.error(f"❌ 启动时向量索引同步失败: {e}", exc_info=True)
 
     yield
 

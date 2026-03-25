@@ -1,19 +1,46 @@
 """Diary API endpoints for managing character diary entries.
 
 Diaries are stored in data/daily/{name}/
+
+通过 MemoryBackendFactory 统一管理 v1/v2 切换
 """
 
 import logging
-from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from typing import Optional
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
-from memory.v1.services.diary import DiaryFileService
-from app.models.diary import DiaryEntry
-from memory.v1.plugin_manager import plugin_manager
-
+from memory import MemoryBackendFactory
 
 logger = logging.getLogger(__name__)
+
+# 获取当前 backend
+_current_backend = MemoryBackendFactory.get_backend()
+_is_v1 = _current_backend.name == "v1"
+
+# 根据 backend 类型导入对应服务
+if _is_v1:
+    from memory.v1.services.diary import DiaryFileService
+    from memory.v1.plugin_manager import plugin_manager
+    from app.models.diary import DiaryEntry
+else:
+    # V2 模式下 Diary API 不可用
+    DiaryFileService = None
+    plugin_manager = None
+    DiaryEntry = None
+
+
+def _check_v1_enabled():
+    """检查 v1 是否启用，未启用则抛出异常"""
+    if _current_backend.name == "v2":
+        raise HTTPException(status_code=503, detail="Diary API not available in v2 mode")
+
+
+def _get_diary_service():
+    """获取日记服务实例"""
+    if DiaryFileService is None:
+        raise HTTPException(status_code=503, detail="Diary API not available in v2 mode")
+    return DiaryFileService()
 
 
 # Create router
@@ -41,25 +68,11 @@ class AIUpdateDiaryRequest(BaseModel):
     character_id: Optional[str] = Field(None, description="角色 ID（可选，用于指定搜索范围）")
 
 
-# Dependency injection
-def get_diary_file_service():
-    """获取日记文件服务实例"""
-    return DiaryFileService()
-
-
 @router.get("/list")
-async def list_diaries(
-    character_id: str,
-    limit: int = 10,
-    diary_service: DiaryFileService = Depends(get_diary_file_service)
-):
-    """
-    获取指定角色的日记列表
-
-    Query Parameters:
-    - character_id: 角色 ID
-    - limit: 返回数量限制 (default: 10)
-    """
+async def list_diaries(character_id: str, limit: int = 10):
+    """获取指定角色的日记列表"""
+    _check_v1_enabled()
+    diary_service = _get_diary_service()
     try:
         diaries = diary_service.list_diaries(character_id=character_id, limit=limit)
         return [DiaryEntry(**d) for d in diaries]
@@ -68,10 +81,10 @@ async def list_diaries(
 
 
 @router.get("/names")
-async def list_diary_names(
-    diary_service: DiaryFileService = Depends(get_diary_file_service)
-):
+async def list_diary_names():
     """获取所有有日记的角色 ID 列表"""
+    _check_v1_enabled()
+    diary_service = _get_diary_service()
     try:
         names = diary_service.list_all_diary_names()
         return {"names": names}
@@ -80,16 +93,10 @@ async def list_diary_names(
 
 
 @router.get("/latest")
-async def get_latest_diary(
-    character_id: str,
-    diary_service: DiaryFileService = Depends(get_diary_file_service)
-):
-    """
-    获取指定角色最新的日记
-
-    Query Parameters:
-    - character_id: 角色 ID
-    """
+async def get_latest_diary(character_id: str):
+    """获取指定角色最新的日记"""
+    _check_v1_enabled()
+    diary_service = _get_diary_service()
     try:
         diaries = diary_service.list_diaries(character_id=character_id, limit=1)
         if not diaries:
@@ -100,11 +107,10 @@ async def get_latest_diary(
 
 
 @router.get("/sync")
-async def sync_diary_files(
-    character_id: str,
-    diary_service: DiaryFileService = Depends(get_diary_file_service)
-):
+async def sync_diary_files(character_id: str):
     """同步指定角色的日记文件元数据到数据库"""
+    _check_v1_enabled()
+    diary_service = _get_diary_service()
     try:
         result = diary_service.update_file_metadata(character_id)
         return {
@@ -119,16 +125,10 @@ async def sync_diary_files(
 
 
 @router.get("/{path:path}")
-async def get_diary_by_path(
-    path: str,
-    diary_service: DiaryFileService = Depends(get_diary_file_service)
-):
-    """
-    根据路径获取日记详情
-
-    Path Parameters:
-    - path: 文件相对路径 (例如: {name}/2025-01-23-14_30_52.txt)
-    """
+async def get_diary_by_path(path: str):
+    """根据路径获取日记详情"""
+    _check_v1_enabled()
+    diary_service = _get_diary_service()
     try:
         diary = diary_service.read_diary(path)
         if not diary:
@@ -141,24 +141,11 @@ async def get_diary_by_path(
 
 
 @router.post("/create")
-async def create_diary(
-    request: CreateDiaryRequest,
-    background_tasks: BackgroundTasks,
-    diary_service: DiaryFileService = Depends(get_diary_file_service)
-):
-    """
-    AI创建日记（通过 DailyNote 插件）
+async def create_diary(request: CreateDiaryRequest, background_tasks: BackgroundTasks):
+    """AI创建日记（通过 DailyNote 插件）"""
+    _check_v1_enabled()
+    diary_service = _get_diary_service()
 
-    Request Body:
-    ```json
-    {
-        "character_id": "550e8400-e29b-41d4-a716-446655440000",
-        "date": "2025-01-23",
-        "content": "今天哥哥陪我玩了一整天...\\n\\nTag: 开心, 约会",
-        "tag": null
-    }
-    ```
-    """
     try:
         # 确保插件已加载
         if not plugin_manager.plugins:
@@ -168,25 +155,21 @@ async def create_diary(
         result = await plugin_manager.process_tool_call("DailyNote", {
             "command": "create",
             "maid": request.character_id,
-            "Date": request.date,
-            "Content": request.content,
-            "Tag": request.tag
+            "date": request.date,
+            "content": request.content,
+            "tag": request.tag
         })
 
         if result.get("status") == "success":
-            # 读取创建的日记并返回
             diary_path = result.get("path")
             diary = diary_service.read_diary(diary_path)
             if diary:
-                # 添加后台任务：自动同步角色的日记到向量索引
                 background_tasks.add_task(_trigger_vector_sync)
-
                 return {
                     "message": result.get("message", "日记创建成功"),
                     "diary": DiaryEntry(**diary)
                 }
             else:
-                # 如果读取失败，返回基本信息
                 return {
                     "message": result.get("message", "日记创建成功"),
                     "diary": DiaryEntry(
@@ -207,25 +190,11 @@ async def create_diary(
 
 
 @router.post("/ai-update")
-async def ai_update_diary(
-    request: AIUpdateDiaryRequest,
-    background_tasks: BackgroundTasks,
-    diary_service: DiaryFileService = Depends(get_diary_file_service)
-):
-    """
-    AI更新日记（通过 DailyNote 插件）
+async def ai_update_diary(request: AIUpdateDiaryRequest, background_tasks: BackgroundTasks):
+    """AI更新日记（通过 DailyNote 插件）"""
+    _check_v1_enabled()
+    diary_service = _get_diary_service()
 
-    Request Body:
-    ```json
-    {
-        "target": "这是日记中要被替换掉的旧内容，至少15个字符长",
-        "replace": "这是将要写入日记的新内容",
-        "character_id": "550e8400-e29b-41d4-a716-446655440000"
-    }
-    ```
-
-    如果不指定 character_id，会在所有角色的日记中搜索。
-    """
     try:
         # 确保插件已加载
         if not plugin_manager.plugins:
@@ -240,14 +209,11 @@ async def ai_update_diary(
         })
 
         if result.get("status") == "success":
-            # 读取更新后的日记并返回
             diary_path = result.get("path")
             diary = diary_service.read_diary(diary_path)
             if diary:
-                # 添加后台任务：自动同步角色的日记到向量索引
                 if request.character_id:
                     background_tasks.add_task(_trigger_vector_sync)
-
                 return {
                     "message": result.get("message", "日记更新成功"),
                     "path": diary_path,
@@ -271,45 +237,24 @@ async def ai_update_diary(
 
 
 @router.delete("/{path:path}")
-async def delete_diary(
-    path: str,
-    diary_service: DiaryFileService = Depends(get_diary_file_service)
-):
-    """
-    删除日记
+async def delete_diary(path: str):
+    """删除日记"""
+    _check_v1_enabled()
+    diary_service = _get_diary_service()
 
-    Path Parameters:
-    - path: 文件相对路径
-
-    Returns:
-    ```json
-    {
-        "message": "日记删除成功",
-        "path": "550e8400-.../daily/2025-01-23-14_30_52.txt"
-    }
-    ```
-    """
     try:
         success = diary_service.delete_diary(path)
         if not success:
             raise HTTPException(status_code=404, detail="日记不存在")
-
-        return {
-            "message": "日记删除成功",
-            "path": path
-        }
+        return {"message": "日记删除成功", "path": path}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除日记失败: {str(e)}")
 
 
-# ==================== Helper Functions ====================
-
 async def _trigger_vector_sync():
-    """
-    后台任务：触发向量索引同步（调用统一同步服务）
-    """
+    """后台任务：触发向量索引同步"""
     from app.vector_index import sync_all_diaries_to_vector_index
 
     logger.info("[Diary API] 🚀 触发向量索引同步（后台任务）")

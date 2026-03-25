@@ -9,17 +9,24 @@ import os
 
 from app.services.llm import LLM
 from app.services.character_service import CharacterService
-# Load ChatService based on MEMORY env
-memory_mode = os.getenv("MEMORY", "v1")
-if memory_mode == "v0":
-    from app.services.chat_service_v0 import ChatServiceV0 as ChatService
-else:
-    from app.services.chat_service_v1 import ChatService
 from app.services.chat_history_service import ChatHistoryService
 from app.models.character import UserCharacterPreference
 from app.schemas.message import ChatRequest, ChatResponse
 
-from memory.v1.plugin_manager import plugin_manager
+# Load ChatService based on MEMORY env
+memory_mode = os.getenv("MEMORY", "v1")
+if memory_mode == "v0":
+    from app.services.chat_service_v0 import ChatServiceV0 as ChatService
+elif memory_mode == "v2":
+    from app.services.chat_service_v1 import ChatService
+    from app.services.session_service import SessionService
+    from memory.v2.chromadb_manager import ChromaDBManager
+    # v2 模式下不使用 plugin_manager
+    plugin_manager = None
+else:
+    from app.services.chat_service_v1 import ChatService
+    # v1 模式：导入 plugin_manager
+    from memory.v1.plugin_manager import plugin_manager
 
 # Create router
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -122,6 +129,12 @@ async def chat(
     # Get user preferences if available
     user_preferences = get_user_preferences(character_id, user_id)
 
+    # Initialize session service for v2 mode
+    session_service = None
+    if memory_mode == "v2":
+        chromadb_manager = ChromaDBManager()
+        session_service = SessionService(chromadb_manager=chromadb_manager)
+
     # Load conversation history from topic
     history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
 
@@ -141,8 +154,8 @@ async def chat(
     # Generate response
     try:
         # Ensure plugins are loaded
-        # Load plugins only for v1 mode
-        if memory_mode != "v0":
+        # Load plugins only for v1 mode (v2 uses SessionService)
+        if memory_mode == "v1":
             if not plugin_manager.plugins:
                 await plugin_manager.load_plugins()
 
@@ -161,25 +174,43 @@ async def chat(
             user_id=user_id
         )
 
-        # Save user message to history (name is user_id)
-        history_service.append_message(
-            user_id=user_id,
-            topic_id=topic_id,
-            role="user",
-            content=request.message,
-            name=user_id,  # User ID as name
-            character_id=character_id
-        )
-
-        # Save assistant response to history (name is character name)
-        history_service.append_message(
-            user_id=user_id,
-            topic_id=topic_id,
-            role="assistant",
-            content=response.message,
-            name=character_name,  # Character name
-            character_id=character_id
-        )
+        # Save messages based on memory mode
+        if memory_mode == "v2" and session_service:
+            # Use SessionService for v2 mode (handles auto-commit)
+            await session_service.add_message(
+                character_id=character_id,
+                topic_id=topic_id,
+                role="user",
+                content=request.message,
+                name=user_id,
+                user_id=user_id
+            )
+            await session_service.add_message(
+                character_id=character_id,
+                topic_id=topic_id,
+                role="assistant",
+                content=response.message,
+                name=character_name,
+                user_id=user_id
+            )
+        else:
+            # Use history_service for v0/v1 mode
+            history_service.append_message(
+                user_id=user_id,
+                topic_id=topic_id,
+                role="user",
+                content=request.message,
+                name=user_id,
+                character_id=character_id
+            )
+            history_service.append_message(
+                user_id=user_id,
+                topic_id=topic_id,
+                role="assistant",
+                content=response.message,
+                name=character_name,
+                character_id=character_id
+            )
 
         # Update response with topic information
         response.topic_id = topic_id
@@ -233,6 +264,12 @@ async def chat_stream(
     # Get user preferences if available
     user_preferences = get_user_preferences(character_id, user_id)
 
+    # Initialize session service for v2 mode
+    session_service = None
+    if memory_mode == "v2":
+        chromadb_manager = ChromaDBManager()
+        session_service = SessionService(chromadb_manager=chromadb_manager)
+
     # Load conversation history from topic
     history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
 
@@ -256,8 +293,10 @@ async def chat_stream(
         """Generate streaming response with tool calling support."""
         try:
             # Ensure plugins are loaded
-            if not plugin_manager.plugins:
-                await plugin_manager.load_plugins()
+            # Load plugins only for v1 mode (v2 uses SessionService)
+            if memory_mode == "v1":
+                if not plugin_manager.plugins:
+                    await plugin_manager.load_plugins()
 
             # Create request with history for building messages
             request_with_history = ChatRequest(
@@ -274,26 +313,44 @@ async def chat_stream(
 
             yield "data: [DONE]\n\n"
 
-            # Save user message to history (name is user_id)
-            history_service.append_message(
-                user_id=user_id,
-                topic_id=topic_id,
-                role="user",
-                content=request.message,
-                name=user_id,  # User ID as name
-                character_id=character_id
-            )
-
-            # Save assistant response to history (name is character name)
+            # Save messages based on memory mode
             response_text = "".join(full_response)
-            history_service.append_message(
-                user_id=user_id,
-                topic_id=topic_id,
-                role="assistant",
-                content=response_text,
-                name=character_name,  # Character name
-                character_id=character_id
-            )
+            if memory_mode == "v2" and session_service:
+                # Use SessionService for v2 mode (handles auto-commit)
+                await session_service.add_message(
+                    character_id=character_id,
+                    topic_id=topic_id,
+                    role="user",
+                    content=request.message,
+                    name=user_id,
+                    user_id=user_id
+                )
+                await session_service.add_message(
+                    character_id=character_id,
+                    topic_id=topic_id,
+                    role="assistant",
+                    content=response_text,
+                    name=character_name,
+                    user_id=user_id
+                )
+            else:
+                # Use history_service for v0/v1 mode
+                history_service.append_message(
+                    user_id=user_id,
+                    topic_id=topic_id,
+                    role="user",
+                    content=request.message,
+                    name=user_id,
+                    character_id=character_id
+                )
+                history_service.append_message(
+                    user_id=user_id,
+                    topic_id=topic_id,
+                    role="assistant",
+                    content=response_text,
+                    name=character_name,
+                    character_id=character_id
+                )
         except Exception as e:
             yield f"data: [ERROR: {str(e)}]\n\n"
 
