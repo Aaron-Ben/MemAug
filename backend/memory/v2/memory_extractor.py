@@ -16,10 +16,6 @@ logger = logging.getLogger(__name__)
 
 DATA_BASE_DIR= Path(__file__).parent.parent.parent / "data"
 
-class RequestContext:
-    user: str
-
-
 
 class MemoryExtractor:
     """Extract candidate memories from session context."""
