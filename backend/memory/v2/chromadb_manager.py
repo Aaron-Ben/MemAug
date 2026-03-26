@@ -71,11 +71,6 @@ class ChromaDBManager:
         if owner_space:
             where_clause["$and"].append({"owner_space": {"$eq": owner_space}})
 
-        # uri 前缀匹配 - 由于 ChromaDB 限制，改用后处理过滤
-        # if category_uri_prefix:
-        #     where_clause["$and"].append(
-        #         {"uri": {"$startsWith": category_uri_prefix}}
-        #     )
 
         # 执行向量搜索
         results = self.collection.query(

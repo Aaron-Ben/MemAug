@@ -64,17 +64,28 @@ class MemoryV2Backend(MemoryBackend):
         return {"status": "success", "memory_id": memory_id}
 
     async def get_recent_memories(self, character_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """获取最近的记忆"""
-        if not self._chromadb_manager:
+        """获取最近的记忆 - 通过 SessionService 获取最近的会话消息"""
+        if not self._session_service:
             raise RuntimeError("V2 backend not initialized")
 
-        # 获取最近的 session 记忆
-        results = self._chromadb_manager.search_memories(
-            query="",  # 空查询
-            character_id=character_id,
-            n_results=limit
-        )
-        return results
+        # 获取最近的会话列表
+        sessions = await self._session_service.list_sessions(character_id=character_id)
+
+        result = []
+        for session in sessions[:limit]:
+            topic_id = session.get("topic_id")
+            if topic_id:
+                # 获取会话消息
+                session_obj = await self._session_service.load_session(character_id, topic_id, "user_default")
+                messages = session_obj.messages[-5:] if session_obj.messages else []  # 最近5条
+                for msg in messages:
+                    result.append({
+                        "content": msg.content,
+                        "role": msg.role,
+                        "timestamp": str(msg.timestamp) if hasattr(msg, "timestamp") else ""
+                    })
+
+        return result[:limit]
 
 
 __all__ = ["MemoryV2Backend"]

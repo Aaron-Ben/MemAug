@@ -18,9 +18,10 @@ memory_mode = os.getenv("MEMORY", "v1")
 if memory_mode == "v0":
     from app.services.chat_service_v0 import ChatServiceV0 as ChatService
 elif memory_mode == "v2":
-    from app.services.chat_service_v1 import ChatService
+    from app.services.chat_service_v2 import ChatServiceV2 as ChatService
     from app.services.session_service import SessionService
     from memory.v2.chromadb_manager import ChromaDBManager
+    from memory.v2.retriever import HierarchicalRetriever
     # v2 模式下不使用 plugin_manager
     plugin_manager = None
 else:
@@ -129,17 +130,30 @@ async def chat(
     # Get user preferences if available
     user_preferences = get_user_preferences(character_id, user_id)
 
-    # Initialize session service for v2 mode
+    # Initialize services for v2 mode
     session_service = None
+    retriever = None
     if memory_mode == "v2":
         chromadb_manager = ChromaDBManager()
         session_service = SessionService(chromadb_manager=chromadb_manager)
+        # 初始化记忆检索器
+        from app.services.embedding import EmbeddingService
+        embedding_service = EmbeddingService()
+        retriever = HierarchicalRetriever(
+            chromadb_manager=chromadb_manager,
+            embedding_service=embedding_service,
+        )
 
     # Load conversation history from topic
     history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
 
     # Create chat service based on memory mode
     if memory_mode == "v0":
+        chat_service = ChatService(
+            llm=llm,
+            character_service=character_service
+        )
+    elif memory_mode == "v2":
         chat_service = ChatService(
             llm=llm,
             character_service=character_service
@@ -167,12 +181,43 @@ async def chat(
             stream=request.stream
         )
 
+        # Retrieve relevant memories for v2 mode
+        memory_context = ""
+        if memory_mode == "v2" and retriever:
+            try:
+                from memory.v2.retriever import SpaceType
+                result = await retriever.retrieve(
+                    query=request.message,
+                    user=user_id,
+                    space=SpaceType.USER,
+                    limit=5
+                )
+                if result.matched_contexts:
+                    memory_parts = ["[相关记忆参考]"]
+                    for ctx in result.matched_contexts:
+                        content = ctx.abstract[:300] if len(ctx.abstract) > 300 else ctx.abstract
+                        memory_parts.append(f"- {content}")
+                    memory_context = "\n".join(memory_parts)
+                    logger.info(f"[Memory] Retrieved {len(result.matched_contexts)} contexts")
+            except Exception as e:
+                logger.warning(f"[Memory] Failed to retrieve: {e}")
+
         # Use chat method (tool calling is handled internally via chat_stream)
-        response = await chat_service.chat(
-            request=request_with_history,
-            user_preferences=user_preferences,
-            user_id=user_id
-        )
+        if memory_mode == "v2":
+            response = await chat_service.chat(
+                request=request_with_history,
+                user_preferences=user_preferences,
+                user_id=user_id,
+                memory_context=memory_context,
+                session_service=session_service,
+                retriever=retriever
+            )
+        else:
+            response = await chat_service.chat(
+                request=request_with_history,
+                user_preferences=user_preferences,
+                user_id=user_id
+            )
 
         # Save messages based on memory mode
         if memory_mode == "v2" and session_service:
@@ -264,17 +309,30 @@ async def chat_stream(
     # Get user preferences if available
     user_preferences = get_user_preferences(character_id, user_id)
 
-    # Initialize session service for v2 mode
+    # Initialize services for v2 mode
     session_service = None
+    retriever = None
     if memory_mode == "v2":
         chromadb_manager = ChromaDBManager()
         session_service = SessionService(chromadb_manager=chromadb_manager)
+        # 初始化记忆检索器
+        from app.services.embedding import EmbeddingService
+        embedding_service = EmbeddingService()
+        retriever = HierarchicalRetriever(
+            chromadb_manager=chromadb_manager,
+            embedding_service=embedding_service,
+        )
 
     # Load conversation history from topic
     history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
 
     # Create chat service based on memory mode
     if memory_mode == "v0":
+        chat_service = ChatService(
+            llm=llm,
+            character_service=character_service
+        )
+    elif memory_mode == "v2":
         chat_service = ChatService(
             llm=llm,
             character_service=character_service
@@ -306,10 +364,38 @@ async def chat_stream(
                 stream=request.stream
             )
 
+            # Retrieve relevant memories for v2 mode
+            memory_context = ""
+            if memory_mode == "v2" and retriever:
+                try:
+                    from memory.v2.retriever import SpaceType
+                    result = await retriever.retrieve(
+                        query=request.message,
+                        user=user_id,
+                        space=SpaceType.USER,
+                        limit=5
+                    )
+                    if result.matched_contexts:
+                        memory_parts = ["[相关记忆参考]"]
+                        for ctx in result.matched_contexts:
+                            content = ctx.abstract[:300] if len(ctx.abstract) > 300 else ctx.abstract
+                            memory_parts.append(f"- {content}")
+                        memory_context = "\n".join(memory_parts)
+                        logger.info(f"[Memory] Retrieved {len(result.matched_contexts)} contexts")
+                except Exception as e:
+                    logger.warning(f"[Memory] Failed to retrieve: {e}")
+
             # Stream response (tool calling is handled internally by chat_service.chat_stream)
-            async for chunk in chat_service.chat_stream(request_with_history, user_preferences, user_id):
-                full_response.append(chunk)
-                yield f"data: {chunk}\n\n"
+            if memory_mode == "v2":
+                async for chunk in chat_service.chat_stream(
+                    request_with_history, user_preferences, user_id, memory_context, session_service, retriever
+                ):
+                    full_response.append(chunk)
+                    yield f"data: {chunk}\n\n"
+            else:
+                async for chunk in chat_service.chat_stream(request_with_history, user_preferences, user_id):
+                    full_response.append(chunk)
+                    yield f"data: {chunk}\n\n"
 
             yield "data: [DONE]\n\n"
 
