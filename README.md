@@ -1,168 +1,94 @@
 # 角色增强记忆系统
 
-一个基于 FastAPI + React 的情感陪伴 AI 系统，提供智能对话、角色定制、日记记录、工具调用等功能。
+一个基于 FastAPI + React 的情感陪伴 AI 系统，提供智能对话、角色定制、记忆管理、技能系统等功能。
 
 ## 功能特性
 
 ### 💬 智能对话
-- **流式响应**：实时交互体验
+- **流式响应**：实时 SSE 流式交互体验
 - **对话历史**：自动保存和恢复对话上下文
+- **V1/V2 双模式**：支持记忆系统切换
 
 ### 🎭 角色定制
 - 支持自定义 AI 角色性格、行为偏好
 - 用户个性化偏好设置
 - 自定义提示词系统
 
-### 🔧 工具调用系统 (VCPToolBox 模式)
-- **插件化架构**：模块化扩展功能，支持多种协议
-  - **stdio 协议**：通过子进程执行外部插件（如 DeepMemo Rust 插件）
-  - **direct 协议**：直接调用 Python 插件（如 RAG 日记检索）
-- **自动工具检测**：AI 响应中的工具调用标记自动检测和执行
-- **工具调用格式**：`<<<[TOOL_REQUEST]>>>...<<<[END_TOOL_REQUEST]>>>`
-- **工具结果注入**：执行结果自动注入下一轮对话
+### 🧠 记忆系统 (V1/V2)
 
-### 内置插件
-1. **DeepMemo（深度回忆）**
-   - 基于向量数据库的语义检索
-   - 支持时间范围查询（如"三天前"、"上周"）
-   - 智能标签关联和上下文理解
+| 特性 | V1 (日记模式) | V2 (会话模式) |
+|------|---------------|---------------|
+| 存储 | 文件系统 (diary/) | ChromaDB + 文件 |
+| 检索 | VexusIndex 向量检索 | HierarchicalRetriever 层级检索 |
+| 记忆提取 | 日记内容提取 | 6类记忆提取 + 去重 |
+| 会话压缩 | - | SessionCompressor 长时记忆 |
 
-2. **RAGDailyPlugin（日记检索）**
-   - 基于用户日记的 RAG 检索
-   - 支持时间表达式解析
-   - 自动分块处理长文本
+通过 `MEMORY=v2` 环境变量切换。
 
-3. **DailyNote（日记管理）**
-   - AI 自动创建和更新日记
-   - 支持智能内容提取
-   - 自动标签生成
+### 🎯 Skills 系统 (nanobot 风格)
 
-### 📝 智能日记
-- **AI 自动触发**：每次对话后 AI 自动评估是否值得记录
-  - 智能判断对话重要性
-  - 只记录有意义的对话内容
-- **智能提取**：
-  - 从对话中提取结构化日记内容
-  - 自动生成对话主题、关键信息、感受
-  - 自动添加相关标签
-- **日记管理**：
-  - 基于文件系统存储
-  - 支持创建、更新、删除日记
-  - AI 可以主动修正和补充已有日记
-- **向量索引系统**：
-  - 自动将日记文件分块并向量化
-  - 支持高效语义检索和相似度搜索
-  - 懒加载索引优化内存使用
-  - 延迟保存策略减少磁盘 I/O
-- **记忆集成**：
-  - 后续对话自动参考相关日记内容
-  - AI 能够记住与用户的重要时刻
+插件化技能系统，支持动态加载和调用：
 
-### 📊 日志系统
-- **文件日志记录**：所有对话和工具调用自动记录到文件
-- **按日期归档**：
-  - 当天日志：`data/logs/today.txt`
-  - 历史日志：`data/logs/YYYY-MM-DD.txt`
-- **实时写入**：日志实时刷新，方便查看
-- **日志 API**：
-  - `GET /api/v1/chat/logs/today` - 获取今日日志
-  - `GET /api/v1/chat/logs/list` - 列出所有日志文件
-  - `GET /api/v1/chat/logs/{date}` - 获取指定日期日志
+- **SkillCreator**: 创建自定义技能
+- **Weather**: 天气查询技能
 
-### 🎨 用户界面
-- React + TypeScript 实现
-- 响应式布局，支持移动端
-- 实时消息流式显示
+每个 Skill 包含：
+- `skill.yaml` - 技能定义
+- `main.py` - 技能实现
+
+### 📝 日记系统 (V1)
+- AI 自动评估和记录重要对话
+- 智能提取主题、标签、感受
+- 向量化索引支持语义检索
 
 ## 技术栈
 
 ### 后端
 - **框架**: FastAPI
 - **数据库**: SQLite + SQLAlchemy 2.0
-- **LLM & Embedding**: OpenRouter (支持 BGE-M3 等模型)
-- **向量索引**: ChromaDB (V2 记忆系统)
-- **插件系统**: 自定义插件管理器，支持 stdio/direct 协议
+- **LLM & Embedding**: OpenRouter (支持多种模型)
+- **向量索引**: ChromaDB (V2) / VexusIndex (V1)
+- **技能系统**: 自定义 SkillLoader
 - **Python**: 3.13+
-
-### 记忆系统 (V1/V2)
-
-项目支持两套记忆系统，通过环境变量切换：
-
-| 版本 | 存储方式 | 数据格式 | 向量检索 |
-|------|----------|----------|----------|
-| V1 | 文件系统 | 日记 (diary/) | VexusIndex |
-| V2 | ChromaDB | 会话 (session/) | ChromaDB |
-
-启用 V2：`MEMORY=v2` (在 `.env` 中配置)
 
 ### 前端
 - **框架**: React 18 + TypeScript
 - **构建工具**: Vite
 - **样式**: Tailwind CSS
-- **状态管理**: React Hooks
 
 ## 项目结构
 
 ```
 emotional-companionship/
-├── backend/                      # 后端服务
+├── backend/
 │   ├── app/
-│   │   ├── api/               # API 路由
-│   │   │   └── v1/
-│   │   │       ├── chat.py          # 对话接口（含日志端点）
-│   │   │       ├── character.py     # 角色管理
-│   │   │       ├── diary.py         # 日记接口
-│   │   │       └── chat_history.py  # 对话历史接口
-│   │   ├── config/            # 配置模块
-│   │   ├── models/            # 数据模型
-│   │   │   ├── database.py    # 数据库模型（日记、向量存储）
-│   │   │   └── ...
-│   │   ├── schemas/           # Pydantic 模型
-│   │   ├── services/          # 业务逻辑
-│   │   │   ├── chat_service.py         # 对话服务（含工具调用）
-│   │   │   ├── character_service.py    # 角色服务
-│   │   │   ├── llm.py                   # LLM 服务
-│   │   │   ├── embedding.py             # 向量化服务
-│   │   │   ├── session_service.py       # 会话服务
-│   │   │   └── diary/                   # 日记服务
-│   │   │       └── file_service.py
-│   │   ├── utils/            # 工具模块
-│   │   │   ├── file_logger.py         # 文件日志记录
-│   │   │   └── json.py               # JSON 工具
-│   │   ├── characters/       # 角色模块
-│   │   └── vector_index.py  # 向量索引系统
-│   ├── memory/               # 记忆系统
-│   │   ├── factory.py        # 工厂模式 (V1/V2 切换)
-│   │   ├── v1/               # V1 日记系统
-│   │   │   ├── backend.py
-│   │   │   ├── services/
-│   │   │   └── plugins/
-│   │   └── v2/               # V2 会话系统
-│   │       ├── backend.py
-│   │       ├── retriever.py          # 层级检索器
-│   │       ├── compressor.py         # 会话压缩器
-│   │       ├── chromadb_manager.py   # ChromaDB 管理
-│   │       ├── memory_extractor.py   # 记忆提取
-│   │       └── memory_deduplicator.py # 记忆去重
-│   ├── plugins/           # 插件系统
-│   ├── tests/             # 测试目录
-│   └── main.py           # 应用入口
-│
-├── frontend/                  # 前端应用
-│
-├── data/                  # 数据目录
-│   ├── user/{user}/memories/   # V2 用户记忆 (profile, preferences, entities...)
-│   ├── session/{user}/{id}/    # V2 会话数据 (.abstract.md, .overview.md)
-│   ├── chat/           # 对话历史
-│   ├── diary/          # 日记存储 (V1)
-│   ├── logs/           # 日志文件
-│   └── characters/     # 角色数据
-├── chroma-db/           # ChromaDB 向量存储 (V2)
-├── VectorStore/         # 向量索引存储 (V1)
-│
-├── Makefile             # 开发命令
-├── CLAUDE.md            # Claude Code 指南
-└── README.md            # 项目文档
+│   │   ├── api/v1/           # API 路由
+│   │   │   ├── chat.py       # 对话接口
+│   │   │   ├── character.py # 角色管理
+│   │   │   ├── diary.py     # 日记接口
+│   │   │   └── skills.py    # 技能接口
+│   │   ├── config/          # 配置模块
+│   │   ├── models/          # 数据模型
+│   │   ├── services/        # 业务逻辑
+│   │   └── utils/           # 工具模块
+│   ├── memory/
+│   │   ├── factory.py       # 记忆工厂 (V1/V2 切换)
+│   │   ├── v1/              # V1 日记系统
+│   │   └── v2/              # V2 会话系统
+│   ├── skills/              # 技能目录
+│   │   ├── skill-creator/
+│   │   └── weather/
+│   ├── plugins/             # 插件系统
+│   └── main.py              # 应用入口
+├── frontend/                 # React 前端
+├── data/                    # 数据目录
+│   ├── user/               # V2 用户数据
+│   ├── session/            # V2 会话数据
+│   ├── diary/              # V1 日记
+│   └── logs/               # 日志文件
+├── chroma-db/              # ChromaDB 向量存储
+├── VectorStore/            # V1 向量索引
+└── README.md
 ```
 
 ## 快速开始
@@ -170,259 +96,88 @@ emotional-companionship/
 ### 环境要求
 - Python 3.13+
 - Node.js 18+
-- Rust 工具链（用于编译 vector-db）
 - OpenRouter API Key
 
-### 安装依赖
+### 安装
 
-**后端依赖：**
 ```bash
+# 后端依赖
 cd backend
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-**前端依赖：**
-```bash
-make install-frontend
-# 或
+# 前端依赖
 cd frontend && npm install
 ```
 
-**编译 Rust 模块：**
-```bash
-make build-vector-db
-# 或
-cd vector-db && maturin develop --release
-```
+### 配置
 
-### 配置环境变量
-
-复制 `backend/.env.example` 到 `backend/.env` 并填入你的 API Key：
+复制 `backend/.env.example` 到 `backend/.env`：
 
 ```env
-# OpenRouter API Key (必需)
 OPENROUTER_API_KEY=sk-or-v1-xxxxx
-
-# API 配置
 API_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=deepseek/deepseek-v3.2
 EmbeddingModel=baai/bge-m3
+MEMORY=v2  # 可选: v1 或 v2
 ```
 
-### 初始化数据库
+### 启动
 
 ```bash
-cd backend
-python -c "from app.models.database import init_db; init_db()"
-```
-
-### 启动项目
-
-**一键启动（推荐）：**
-```bash
+# 一键启动
 make dev
+
+# 或分别启动
+# 后端: cd backend && uvicorn main:app --reload
+# 前端: cd frontend && npm run dev
 ```
 
-这将自动启动前端和后端服务。
-
-
-后端将运行在 `http://localhost:8000`
-前端将运行在 `http://localhost:5173`
+- 后端: http://localhost:8000
+- 前端: http://localhost:5173
 
 ## API 文档
 
-启动后端后，访问以下地址查看 API 文档：
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+启动后访问：http://localhost:8000/docs
 
-### 核心 API 端点
+### 核心端点
 
-#### 对话
-- `POST /api/v1/chat/` - 发送消息
-- `POST /api/v1/chat/stream` - SSE 流式对话
-- `GET /api/v1/chat/logs/today` - 获取今日日志
-- `GET /api/v1/chat/logs/list` - 列出所有日志文件
-- `GET /api/v1/chat/logs/{date}` - 获取指定日期日志
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/chat/stream` | POST | SSE 流式对话 |
+| `/api/v1/character/*` | GET/POST/PATCH/DELETE | 角色管理 |
+| `/api/v1/diary/*` | GET/POST | 日记管理 |
+| `/api/v1/skills/*` | GET/POST | 技能管理 |
+| `/api/v1/chat/logs/*` | GET | 日志查看 |
 
-#### 角色
-- `GET /api/v1/character/user/list` - 获取角色列表
-- `GET /api/v1/character/user/{character_id}` - 获取角色详情
-- `POST /api/v1/character/create` - 创建新角色
-- `PATCH /api/v1/character/user/{character_id}` - 更新角色提示词
-- `DELETE /api/v1/character/user/{character_id}` - 删除角色
+## Skills 开发
 
-#### 日记
-- `GET /api/v1/diary/list` - 获取日记列表
-- `GET /api/v1/diary/latest` - 获取最新日记
-- `GET /api/v1/diary/names` - 获取日记本名称列表
-- `GET /api/v1/diary/sync` - 同步日记到数据库
-- `GET /api/v1/diary/{path:path}` - 获取指定日记
-- `POST /api/v1/diary/create` - 创建日记
-- `POST /api/v1/diary/ai-update` - AI 更新日记（查找替换）
-- `DELETE /api/v1/diary/{path:path}` - 删除日记
-
-#### 对话历史
-- `POST /api/v1/chat/topics` - 创建新的对话主题
-- `GET /api/v1/chat/topics` - 列出对话主题
-- `GET /api/v1/chat/topics/{topic_id}/history` - 获取对话历史
-- `DELETE /api/v1/chat/topics/{topic_id}` - 删除对话主题
-
-## 工具调用开发指南
-
-### 工具调用格式
-
-AI 需要使用工具时，按以下格式输出：
+创建新技能：
 
 ```
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」插件名「末」,
-参数1:「始」值1「末」,
-参数2:「始」值2「末」
-<<<[END_TOOL_REQUEST]>>>
+backend/skills/my-skill/
+├── skill.yaml     # 技能定义
+└── main.py        # 技能实现
 ```
 
-### 插件清单
-
-当前可用的插件：
-
-| 插件名 | 协议 | 功能 | 配置 |
-|---------|--------|------|------|
-| DeepMemo | stdio | 向量语义检索 | `plugins/deepmemo/config.env` |
-| RAGDailyPlugin | direct | 日记 RAG 检索 | `plugins/rag_daily/config.env` |
-| DailyNote | direct | 日记创建和更新 | - |
-
-### 创建新插件
-
-1. **Stdio 协议插件**（如 Rust/Go 实现）：
-   - 创建插件目录：`plugins/your_plugin/`
-   - 创建 `plugin-manifest.json`：
-     ```json
-     {
-       "name": "YourPlugin",
-       "displayName": "你的插件",
-       "version": "1.0.0",
-       "communication": {
-         "protocol": "stdio",
-         "timeout": 60000
-       },
-       "entryPoint": {
-         "command": "./target/release/your_plugin"
-       }
-     }
-     ```
-   - 可选：创建 `config.env` 配置文件
-
-2. **Direct 协议插件**（Python 实现）：
-   - 创建插件目录：`plugins/your_plugin/`
-   - 创建 `plugin-manifest.json`：
-     ```json
-     {
-       "name": "YourPlugin",
-       "displayName": "你的插件",
-       "version": "1.0.0",
-       "communication": {
-         "protocol": "direct"
-       },
-       "entryPoint": {
-         "script": "main.py"
-       },
-       "capabilities": {
-         "invocationCommands": [
-           {
-             "command": "ToolName",
-             "description": "工具描述",
-             "example": "{\"param\": \"value\"}"
-           }
-         ]
-       }
-     }
-     ```
-   - 实现 `main.py`：
-     ```python
-     async def initialize(config, dependencies):
-         # 初始化逻辑
-         pass
-
-     async def process_tool_call(args):
-         # 工具调用处理
-         return {"status": "success", "result": "..."}
-     ```
-
-## 配置说明
-
-### 向量索引系统
-
-系统内置向量索引功能，用于高效存储和检索日记内容：
-
-**核心特性：**
-- 自动文本分块（基于 token 限制）
-- 批量向量化处理
-- 懒加载索引（按需加载）
-- 延迟保存策略（减少磁盘 I/O）
-- 支持增量更新
-
-**使用方法：**
-```python
-from app.vector_index import VectorIndex, VectorIndexConfig
-
-# 创建索引实例
-config = VectorIndexConfig()
-vector_index = VectorIndex(config)
-
-# 处理单个日记文件
-result = await vector_index.process_diary_file(
-    character_id="sister_001",
-    file_path="2024-01-15.txt"
-)
-
-# 批量同步角色的所有日记
-result = await vector_index.sync_character_diaries("sister_001")
-
-# 保存所有索引到磁盘
-await vector_index.flush_all()
+示例 `skill.yaml`：
+```yaml
+name: my-skill
+description: 我的技能
+version: 1.0.0
+triggers:
+  - "查天气"
+actions:
+  - name: get_weather
+    description: 获取天气
 ```
 
-**索引文件位置：**
-- 存储目录：`VectorStore/`
-- 文件命名：`index_diary_{MD5}.usearch`
-- 每个角色有独立的索引文件
+## 环境变量
 
-**运行测试：**
-```bash
-cd backend
-python tests/test_vector_index.py
-```
-
-### 环境变量 (.env)
-
-| 变量 | 说明 | 默认值 | 必需 |
-|------|------|--------|------|
-| `OPENROUTER_API_KEY` | OpenRouter API Key (LLM + Embedding) | - | ✅ |
-| `API_URL` | OpenRouter API 地址 | `https://openrouter.ai/api/v1` | ✅ |
-| `OPENROUTER_MODEL` | LLM 模型名称 | `anthropic/claude-3.5-sonnet` | ✅ |
-| `EmbeddingModel` | Embedding 模型名称 | `baai/bge-m3` | ✅ |
-| `MEMORY` | 记忆系统版本 (v1/v2) | v1 | - |
-
-## 日志说明
-
-日志文件位于 `data/logs/` 目录：
-
-- **today.txt**：当天的日志（实时追加）
-- **YYYY-MM-DD.txt**：历史日志（自动归档）
-
-日志内容包括：
-- 对话信息
-- 工具调用检测和执行
-- 插件执行结果
-- 错误和异常信息
-
-查看日志示例：
-```bash
-# 查看今天的日志
-curl http://localhost:8000/api/v1/chat/logs/today
-
-# 列出所有日志
-curl http://localhost:8000/api/v1/chat/logs/list
-```
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `OPENROUTER_API_KEY` | API Key | - |
+| `OPENROUTER_MODEL` | LLM 模型 | deepseek/deepseek-v3.2 |
+| `EmbeddingModel` | Embedding 模型 | baai/bge-m3 |
+| `MEMORY` | 记忆系统版本 | v1 |
