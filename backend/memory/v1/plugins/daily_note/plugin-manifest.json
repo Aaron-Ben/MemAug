@@ -27,7 +27,7 @@
           },
           {
             "name": "Date",
-            "description": "日记的日期，格式为 YYYY-MM-DD（例如：2026-03-07）。",
+            "description": "日记的日期，格式为 YYYY-MM-DD。⚠️必须使用系统提示中标注的现实当前日期，绝对不能使用虚构或角色扮演中的日期。",
             "required": true,
             "type": "string"
           },

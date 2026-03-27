@@ -159,8 +159,8 @@ def handle_create(args):
     """处理 create 命令"""
     # 兼容不同的参数名
     maid = args.get('maid') or args.get('maidName') or args.get('Maid') or args.get('MAID')
-    date_string = args.get('dateString') or args.get('Date')
-    content_text = args.get('contentText') or args.get('Content')
+    date_string = args.get('dateString') or args.get('Date') or args.get('date')
+    content_text = args.get('contentText') or args.get('Content') or args.get('content')
     tag = args.get('Tag') or args.get('tag')
 
     if not maid or not date_string or not content_text:
@@ -291,20 +291,24 @@ def handle_update(args):
         ]
 
         # 解析 maid 获取 character_id
-        character_id = maid.strip()
-        tag_match = re.match(r'^\[(.*?)\](.*)$', character_id)
-        if tag_match:
-            character_id = tag_match.group(2).strip()
+        if maid:
+            character_id = maid.strip()
+            tag_match = re.match(r'^\[(.*?)\](.*)$', character_id)
+            if tag_match:
+                character_id = tag_match.group(2).strip()
 
-        # 获取角色名称
-        character_meta = get_character_metadata(character_id, characters_dir)
-        character_name = character_meta.get("name", character_id) if character_meta else character_id
-        sanitized_name = sanitize_path_component(character_name)
+            # 获取角色名称
+            character_meta = get_character_metadata(character_id, characters_dir)
+            character_name = character_meta.get("name", character_id) if character_meta else character_id
+            sanitized_name = sanitize_path_component(character_name)
 
-        # 优先搜索指定的角色名称目录
-        for dir_entry in all_daily_dirs:
-            if dir_entry.name == sanitized_name:
-                priority_names.append(dir_entry)
+            # 优先搜索指定的角色名称目录
+            for dir_entry in all_daily_dirs:
+                if dir_entry.name == sanitized_name:
+                    priority_names.append(dir_entry)
+        else:
+            # 未指定 maid，搜索所有目录
+            priority_names = list(all_daily_dirs)
 
         # 合并搜索顺序：优先目录在前
         directories_to_scan = priority_names

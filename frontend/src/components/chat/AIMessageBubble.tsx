@@ -74,7 +74,7 @@ const ToolRequestCollapsible: React.FC<{ content: string; characterId?: string; 
           if (characterId) processedValue = processedValue.replace(/\{CHARACTER_ID\}/g, characterId);
           if (characterName) processedValue = processedValue.replace(/\{CHARACTER_NAME\}/g, characterName);
           // 替换日期占位符
-          processedValue = processedValue.replace(/\{TODAY\}/g, new Date().toISOString().split('T')[0]);
+          processedValue = processedValue.replace(/\{TODAY\}/g, new Date().toLocaleDateString('sv-SE'));
           processedValue = processedValue.replace(/\{CURRENT_TIME\}/g, new Date().toTimeString().slice(0, 5));
 
           params[key] = processedValue;
@@ -87,7 +87,7 @@ const ToolRequestCollapsible: React.FC<{ content: string; characterId?: string; 
   const params = parseToolRequest(content);
   const toolName = params.tool_name || 'Unknown';
   const isDiary = isDiaryTool(toolName);
-  const todayDate = new Date().toISOString().split('T')[0];
+  const todayDate = new Date().toLocaleDateString('sv-SE');
 
 
   // 获取显示用的角色名称

@@ -196,7 +196,18 @@ class PluginManager:
 
             # 检查返回码
             if process.returncode != 0:
-                error_msg = stderr.decode('utf-8', errors='replace') if stderr else "Unknown error"
+                # 优先从 stdout 解析插件返回的错误信息
+                stdout_str = stdout.decode('utf-8', errors='replace').strip() if stdout else ""
+                if stdout_str:
+                    try:
+                        result = json.loads(stdout_str)
+                        if isinstance(result, dict) and result.get("status") == "error":
+                            logger.error(f"[PluginManager] {plugin_name} failed (code {process.returncode}): {result.get('error', 'Unknown error')}")
+                            return result
+                    except json.JSONDecodeError:
+                        pass
+
+                error_msg = stderr.decode('utf-8', errors='replace').strip() if stderr else "Unknown error"
                 logger.error(f"[PluginManager] {plugin_name} failed (code {process.returncode}): {error_msg}")
                 return {"status": "error", "error": f"Plugin '{plugin_name}' failed: {error_msg}"}
 
@@ -387,7 +398,8 @@ class PluginManager:
                 # 读取 commandIdentifier 字段（支持旧版 command 字段作为后备）
                 subcommand = cmd.get("commandIdentifier") or cmd.get("command", "")
                 if subcommand:
-                    full_tool_name = plugin_name
+                    # 注册子命令别名（如 "DailyNote.create", "DailyNote.update"）
+                    full_tool_name = f"{plugin_name}.{subcommand}"
                     additional_args = {"command": subcommand}
 
                     # 注册别名映射
@@ -444,27 +456,32 @@ class PluginManager:
             invocation_commands = capabilities.get('invocationCommands', [])
 
             if invocation_commands:
-                # Build tool description
+                # 将同一插件的所有命令描述合并，避免后续命令覆盖前面的
+                all_cmd_parts = []
                 for cmd in invocation_commands:
-                    # 直接使用插件名作为工具名
-                    cmd_name = name
-
                     cmd_desc = cmd.get('description', '')
                     cmd_example = cmd.get('example', '')
+                    subcommand = cmd.get('commandIdentifier') or cmd.get('command', '')
 
-                    description = f"""## {cmd_name}
+                    part = f"""### 命令: {subcommand}
 
 {cmd_desc}
 
 示例参数:
 ```json
 {cmd_example}
-```
+```"""
+                    all_cmd_parts.append(part)
+
+                if all_cmd_parts:
+                    combined_description = f"""## {name}
+
+{"\n\n".join(all_cmd_parts)}
 
 当需要使用此工具时，请按以下格式输出：
 
 <<<[TOOL_REQUEST]>>>
-tool_name:「始」{cmd_name}「末」,
+tool_name:「始」{name}「末」,
 参数名1:「始」值1「末」,
 参数名2:「始」值2「末」
 <<<[END_TOOL_REQUEST]>>>
@@ -475,7 +492,7 @@ tool_name:「始」{cmd_name}「末」,
 3. 工具调用用 <<<[TOOL_REQUEST]>>> 包裹
 4. 对于需要 character_id 的参数（如 maid），请使用角色信息中的 character_id 值
 """
-                    descriptions[f'VCP{cmd_name}'] = description
+                    descriptions[f'VCP{name}'] = combined_description
 
         return descriptions
 

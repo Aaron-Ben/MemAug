@@ -256,6 +256,12 @@ class ChatService:
 
             logger.info(f"[Tool Call] Added tools description to system prompt")
 
+        # 注入当前日期时间，供 AI 在调用工具时使用
+        now = datetime.now()
+        current_date_str = now.strftime('%Y-%m-%d')
+        current_date_info = f"## 重要：现实时间信息\n当前现实日期时间: {now.strftime('%Y-%m-%d %H:%M:%S')} (星期{['一','二','三','四','五','六','日'][now.weekday()]})\n注意：当调用任何需要Date参数的工具时，Date必须使用当前现实日期 {current_date_str}，不能使用虚构日期。"
+        system_prompt = f"{system_prompt}\n\n{current_date_info}"
+
         # Build messages list
         messages = [{"role": "system", "content": system_prompt}]
 
