@@ -11,11 +11,11 @@ import os
 # 检查记忆模式
 MEMORY_BACKEND = os.getenv("MEMORY", "v1")
 
-if MEMORY_BACKEND == "v2":
-    # v2 模式：提供空实现
+if MEMORY_BACKEND in ("v2", "v3"):
+    # v2/v3 模式：提供空实现（日记同步仅 v1 可用）
     async def sync_all_diaries_to_vector_index():
-        """v2 模式下不支持日记同步"""
-        return {"status": "v2_mode_no_diary_sync", "message": "v2 mode uses Session-based memory, not diary sync"}
+        """非 v1 模式下不支持日记同步"""
+        return {"status": "no_diary_sync", "message": f"{MEMORY_BACKEND} mode does not use diary sync"}
 
     async def sync_character_diary_to_vector_index(character_id: str):
         """v2 模式下不支持日记同步"""

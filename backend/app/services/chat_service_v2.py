@@ -14,8 +14,11 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+from app.services.base_chat_service import BaseChatService
 from app.services.llm import LLM
 from app.services.character_service import CharacterStorageService
+from app.services.chat_history_service import ChatHistoryService
+from app.services.embedding import EmbeddingService
 from app.models.character import UserCharacterPreference
 from app.schemas.message import (
     ChatRequest,
@@ -24,10 +27,12 @@ from app.schemas.message import (
 )
 from app.skills.loader import get_skills_loader
 from memory.v2.backend import MemoryBackend
-from memory.v2.retriever import SpaceType
+from memory.v2.chromadb_manager import ChromaDBManager
+from memory.v2.retriever import HierarchicalRetriever, SpaceType
+from app.services.session_service import SessionService
 
 
-class ChatServiceV2:
+class ChatServiceV2(BaseChatService):
     """
     Chat service for V2 memory system.
 
@@ -41,20 +46,23 @@ class ChatServiceV2:
         self,
         llm: LLM,
         character_service: CharacterStorageService,
-        memory_backend: Optional[MemoryBackend] = None
+        history_service: ChatHistoryService,
+        memory_backend: Optional[MemoryBackend] = None,
     ):
-        """
-        Initialize chat service V2.
-
-        Args:
-            llm: LLM instance to use for generating responses
-            character_service: Character service for managing personalities
-            memory_backend: V2 memory backend (optional, for direct memory access)
-        """
         self.llm = llm
         self.character_service = character_service
+        self.history_service = history_service
         self.memory_backend = memory_backend
         self.max_tool_iterations = 0  # V2 不使用 tool calling
+
+        # 初始化 V2 专属服务
+        self._chromadb_manager = ChromaDBManager()
+        self._session_service = SessionService(chromadb_manager=self._chromadb_manager)
+        self._embedding_service = EmbeddingService()
+        self._retriever = HierarchicalRetriever(
+            chromadb_manager=self._chromadb_manager,
+            embedding_service=self._embedding_service,
+        )
 
     def _build_message_context(
         self,
@@ -79,18 +87,11 @@ class ChatServiceV2:
         request: ChatRequest,
         user_preferences: Optional[UserCharacterPreference] = None,
         user_id: str = "user_default",
-        memory_context: str = "",
-        session_service=None,
-        retriever=None
     ) -> ChatResponse:
-        """
-        Generate a character-aware response with V2 memory integration.
-        """
+        """Generate a character-aware response with V2 memory integration."""
         # Collect all chunks from stream
         full_response = ""
-        async for chunk in self.chat_stream(
-            request, user_preferences, user_id, memory_context, session_service, retriever
-        ):
+        async for chunk in self.chat_stream(request, user_preferences, user_id):
             full_response += chunk
 
         # Build response object
@@ -107,22 +108,10 @@ class ChatServiceV2:
         request: ChatRequest,
         user_preferences: Optional[UserCharacterPreference] = None,
         user_id: str = "user_default",
-        memory_context: str = "",
-        session_service=None,
-        retriever=None
     ) -> AsyncGenerator[str, None]:
-        """
-        Generate a streaming character-aware response.
-
-        V2 流程：
-        1. 构建消息（含记忆上下文）
-        2. 流式生成回复
-        3. 不使用 tool calling
-        """
-        # Build initial messages
-        messages = await self._build_messages(
-            request, user_preferences, user_id, memory_context
-        )
+        """Generate a streaming character-aware response."""
+        # Build initial messages (内含记忆检索)
+        messages = await self._build_messages(request, user_preferences, user_id)
 
         # Stream response (no tool calling in V2)
         for chunk in self.llm.generate_response_stream(messages):
@@ -133,14 +122,8 @@ class ChatServiceV2:
         request: ChatRequest,
         user_preferences: Optional[UserCharacterPreference],
         user_id: str,
-        memory_context: str = ""
     ) -> List[Dict]:
-        """
-        Build messages list for LLM call.
-
-        Returns:
-            List of message dicts ready for LLM
-        """
+        """Build messages list for LLM call."""
         # Generate character prompt
         character_prompt = self.character_service.get_prompt(request.character_id)
         if not character_prompt:
@@ -176,7 +159,8 @@ The following skills extend your capabilities. You can read their SKILL.md files
         if request.conversation_history:
             messages.extend(request.conversation_history)
 
-        # Add memory context before current message (from retriever)
+        # 记忆检索（内化，不再由路由层传入）
+        memory_context = await self._retrieve_memory(request.message, user_id)
         if memory_context:
             messages.append({"role": "user", "content": memory_context})
 
@@ -185,30 +169,18 @@ The following skills extend your capabilities. You can read their SKILL.md files
 
         return messages
 
-    async def retrieve_memory(
+    async def _retrieve_memory(
         self,
         query: str,
         user_id: str,
-        retriever,
-        limit: int = 5
+        limit: int = 5,
     ) -> str:
-        """
-        Retrieve relevant memories for the query.
-
-        Args:
-            query: User's message
-            user_id: User identifier
-            retriever: HierarchicalRetriever instance
-            limit: Maximum number of contexts to retrieve
-
-        Returns:
-            Formatted memory context string
-        """
-        if not retriever:
+        """检索相关记忆"""
+        if not self._retriever:
             return ""
 
         try:
-            result = await retriever.retrieve(
+            result = await self._retriever.retrieve(
                 query=query,
                 user=user_id,
                 space=SpaceType.USER,
@@ -227,33 +199,31 @@ The following skills extend your capabilities. You can read their SKILL.md files
 
         return ""
 
-    async def save_to_memory(
+    async def persist_messages(
         self,
-        session_service,
         character_id: str,
-        topic_id: str,
+        topic_id: int,
         user_id: str,
         character_name: str,
         user_message: str,
-        assistant_message: str
-    ):
-        """
-        Save conversation to V2 memory system.
+        assistant_message: str,
+    ) -> None:
+        """保存对话消息：history_service + session_service 双写"""
+        # 1. 保存到 history_service（对话连续性）
+        self.history_service.append_message(
+            user_id=user_id, topic_id=topic_id,
+            role="user", content=user_message,
+            name=user_id, character_id=character_id,
+        )
+        self.history_service.append_message(
+            user_id=user_id, topic_id=topic_id,
+            role="assistant", content=assistant_message,
+            name=character_name, character_id=character_id,
+        )
 
-        Args:
-            session_service: SessionService instance
-            character_id: Character identifier
-            topic_id: Topic identifier
-            user_id: User identifier
-            character_name: Character name
-            user_message: User's message
-            assistant_message: Assistant's response
-        """
-        if not session_service:
-            return
-
+        # 2. 保存到 V2 session service
         try:
-            await session_service.add_message(
+            await self._session_service.add_message(
                 character_id=character_id,
                 topic_id=topic_id,
                 role="user",
@@ -261,7 +231,7 @@ The following skills extend your capabilities. You can read their SKILL.md files
                 name=user_id,
                 user_id=user_id
             )
-            await session_service.add_message(
+            await self._session_service.add_message(
                 character_id=character_id,
                 topic_id=topic_id,
                 role="assistant",
@@ -271,4 +241,4 @@ The following skills extend your capabilities. You can read their SKILL.md files
             )
             logger.info(f"[Memory] Saved conversation to session")
         except Exception as e:
-            logger.error(f"[Memory] Failed to save: {e}")
+            logger.error(f"[Memory] Failed to save to session: {e}")

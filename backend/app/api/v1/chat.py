@@ -1,33 +1,22 @@
 """Chat API endpoints for character-based conversations."""
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from datetime import datetime
 import logging
 import os
 
+from app.services.base_chat_service import BaseChatService
 from app.services.llm import LLM
 from app.services.character_service import CharacterService
 from app.services.chat_history_service import ChatHistoryService
 from app.models.character import UserCharacterPreference
 from app.schemas.message import ChatRequest, ChatResponse
 
-# Load ChatService based on MEMORY env
+# Load memory mode
 memory_mode = os.getenv("MEMORY", "v1")
-if memory_mode == "v0":
-    from app.services.chat_service_v0 import ChatServiceV0 as ChatService
-elif memory_mode == "v2":
-    from app.services.chat_service_v2 import ChatServiceV2 as ChatService
-    from app.services.session_service import SessionService
-    from memory.v2.chromadb_manager import ChromaDBManager
-    from memory.v2.retriever import HierarchicalRetriever
-    # v2 模式下不使用 plugin_manager
-    plugin_manager = None
-else:
-    from app.services.chat_service_v1 import ChatService
-    # v1 模式：导入 plugin_manager
-    from memory.v1.plugin_manager import plugin_manager
 
 # Create router
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -39,21 +28,58 @@ logger = logging.getLogger(__name__)
 from app.api.v1.character import _user_preferences_store
 
 
+def _create_chat_service(
+    llm: LLM,
+    character_service: CharacterService,
+    history_service: ChatHistoryService,
+) -> BaseChatService:
+    """工厂函数：根据 memory_mode 创建对应的 ChatService"""
+    if memory_mode == "v0":
+        from app.services.chat_service_v0 import ChatServiceV0
+        return ChatServiceV0(
+            llm=llm,
+            character_service=character_service,
+            history_service=history_service,
+        )
+    elif memory_mode == "v2":
+        from app.services.chat_service_v2 import ChatServiceV2
+        return ChatServiceV2(
+            llm=llm,
+            character_service=character_service,
+            history_service=history_service,
+        )
+    elif memory_mode == "v3":
+        from app.services.chat_service_v3 import ChatServiceV3
+        from memory.factory import MemoryBackendFactory
+        from memory.v3.backend import MemoryV3Backend
+        backend = MemoryBackendFactory.get_backend()
+        if not isinstance(backend, MemoryV3Backend):
+            raise RuntimeError(f"Expected MemoryV3Backend, got {type(backend)}")
+        return ChatServiceV3(
+            llm=llm,
+            character_service=character_service,
+            history_service=history_service,
+            memory_backend=backend,
+        )
+    else:
+        from app.services.chat_service_v1 import ChatServiceV1
+        from memory.v1.plugin_manager import plugin_manager
+        return ChatServiceV1(
+            llm=llm,
+            character_service=character_service,
+            history_service=history_service,
+            plugin_manager=plugin_manager,
+        )
+
+
 def get_character_service() -> CharacterService:
     """Dependency injection for CharacterService."""
     return CharacterService()
 
 
 def get_llm_service() -> LLM:
-    """
-    Dependency injection for LLM service.
-    Uses OpenRouter by default.
-
-    Note: Requires OPENROUTER_API_KEY environment variable.
-    """
-    # Get model from environment or use default
+    """Dependency injection for LLM service."""
     model = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
-
     return LLM(config={"model": model})
 
 
@@ -63,10 +89,7 @@ def get_chat_history_service() -> ChatHistoryService:
 
 
 def get_mock_user_id() -> str:
-    """
-    Mock user ID for development.
-    In production, this would come from authentication.
-    """
+    """Mock user ID for development."""
     return "user_default"
 
 
@@ -90,176 +113,54 @@ async def chat(
     """
     Send a message to a character and get a response.
 
-    Tool calling is handled automatically by chat_service.chat.
-    The response will not contain tool call markers <<<[TOOL_REQUEST]>>>.
-
     Request Body:
     - message: User's message to the character
     - character_id: Character to chat with (UUID)
     - topic_id: Topic ID for continuing a conversation (optional)
-    - conversation_history: Optional previous messages for context (deprecated, use topic_id)
     - stream: Whether to stream the response (default: false)
-
-    Returns:
-        Character's response with metadata including topic_id
-
-    Example:
-    ```json
-    {
-        "message": "我回来了",
-        "character_id": "550e8400-e29b-41d4-a716-446655440000",
-        "stream": false
-    }
-    ```
     """
-    # Resolve topic_id (get or create default if not provided)
+    # Resolve topic_id
     character_id = request.character_id
     topic_id = request.topic_id
     if topic_id is None:
         topic_id = history_service.get_or_create_default_topic(user_id, character_id)
 
-    # Verify character exists and get character name
+    # Verify character exists
     character = character_service.get_character(character_id)
     if not character:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Character not found: {character_id}"
-        )
+        raise HTTPException(status_code=404, detail=f"Character not found: {character_id}")
     character_name = character.name if character else character_id
 
-    # Get user preferences if available
+    # Get user preferences
     user_preferences = get_user_preferences(character_id, user_id)
 
-    # Initialize services for v2 mode
-    session_service = None
-    retriever = None
-    if memory_mode == "v2":
-        chromadb_manager = ChromaDBManager()
-        session_service = SessionService(chromadb_manager=chromadb_manager)
-        # 初始化记忆检索器
-        from app.services.embedding import EmbeddingService
-        embedding_service = EmbeddingService()
-        retriever = HierarchicalRetriever(
-            chromadb_manager=chromadb_manager,
-            embedding_service=embedding_service,
-        )
+    # Create chat service (version-agnostic)
+    chat_service = _create_chat_service(llm, character_service, history_service)
 
-    # Load conversation history from topic
+    # Load conversation history
     history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
-
-    # Create chat service based on memory mode
-    if memory_mode == "v0":
-        chat_service = ChatService(
-            llm=llm,
-            character_service=character_service
-        )
-    elif memory_mode == "v2":
-        chat_service = ChatService(
-            llm=llm,
-            character_service=character_service
-        )
-    else:
-        chat_service = ChatService(
-            llm=llm,
-            character_service=character_service,
-            plugin_manager=plugin_manager
-        )
+    request_with_history = ChatRequest(
+        message=request.message,
+        character_id=character_id,
+        conversation_history=history_messages if history_messages else None,
+        stream=request.stream,
+    )
 
     # Generate response
     try:
-        # Ensure plugins are loaded
-        # Load plugins only for v1 mode (v2 uses SessionService)
-        if memory_mode == "v1":
-            if not plugin_manager.plugins:
-                await plugin_manager.load_plugins()
+        response = await chat_service.chat(request_with_history, user_preferences, user_id)
 
-        # Create modified request with history
-        request_with_history = ChatRequest(
-            message=request.message,
+        # Persist messages
+        await chat_service.persist_messages(
             character_id=character_id,
-            conversation_history=history_messages if history_messages else None,
-            stream=request.stream
+            topic_id=topic_id,
+            user_id=user_id,
+            character_name=character_name,
+            user_message=request.message,
+            assistant_message=response.message,
         )
 
-        # Retrieve relevant memories for v2 mode
-        memory_context = ""
-        if memory_mode == "v2" and retriever:
-            try:
-                from memory.v2.retriever import SpaceType
-                result = await retriever.retrieve(
-                    query=request.message,
-                    user=user_id,
-                    space=SpaceType.USER,
-                    limit=5
-                )
-                if result.matched_contexts:
-                    memory_parts = ["[相关记忆参考]"]
-                    for ctx in result.matched_contexts:
-                        content = ctx.abstract[:300] if len(ctx.abstract) > 300 else ctx.abstract
-                        memory_parts.append(f"- {content}")
-                    memory_context = "\n".join(memory_parts)
-                    logger.info(f"[Memory] Retrieved {len(result.matched_contexts)} contexts")
-            except Exception as e:
-                logger.warning(f"[Memory] Failed to retrieve: {e}")
-
-        # Use chat method (tool calling is handled internally via chat_stream)
-        if memory_mode == "v2":
-            response = await chat_service.chat(
-                request=request_with_history,
-                user_preferences=user_preferences,
-                user_id=user_id,
-                memory_context=memory_context,
-                session_service=session_service,
-                retriever=retriever
-            )
-        else:
-            response = await chat_service.chat(
-                request=request_with_history,
-                user_preferences=user_preferences,
-                user_id=user_id
-            )
-
-        # Save messages based on memory mode
-        if memory_mode == "v2" and session_service:
-            # Use SessionService for v2 mode (handles auto-commit)
-            await session_service.add_message(
-                character_id=character_id,
-                topic_id=topic_id,
-                role="user",
-                content=request.message,
-                name=user_id,
-                user_id=user_id
-            )
-            await session_service.add_message(
-                character_id=character_id,
-                topic_id=topic_id,
-                role="assistant",
-                content=response.message,
-                name=character_name,
-                user_id=user_id
-            )
-        else:
-            # Use history_service for v0/v1 mode
-            history_service.append_message(
-                user_id=user_id,
-                topic_id=topic_id,
-                role="user",
-                content=request.message,
-                name=user_id,
-                character_id=character_id
-            )
-            history_service.append_message(
-                user_id=user_id,
-                topic_id=topic_id,
-                role="assistant",
-                content=response.message,
-                name=character_name,
-                character_id=character_id
-            )
-
-        # Update response with topic information
         response.topic_id = topic_id
-
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating response: {str(e)}")
@@ -274,169 +175,56 @@ async def chat_stream(
     history_service: ChatHistoryService = Depends(get_chat_history_service)
 ):
     """
-    Send a message to a character and get a streaming response.
-
-    Tool calling is handled automatically by chat_service.chat_stream.
-    The response will not contain tool call markers <<<[TOOL_REQUEST]>>>.
-
-    Returns:
-        Server-Sent Events (SSE) stream with response chunks
-
-    Example:
-    ```json
-    {
-        "message": "我回来了",
-        "character_id": "550e8400-e29b-41d4-a716-446655440000",
-        "stream": true
-    }
-    ```
+    Send a message to a character and get a streaming response (SSE).
     """
-    # Resolve topic_id (get or create default if not provided)
+    # Resolve topic_id
     character_id = request.character_id
     topic_id = request.topic_id
     if topic_id is None:
         topic_id = history_service.get_or_create_default_topic(user_id, character_id)
 
-    # Verify character exists and get character name
+    # Verify character exists
     character = character_service.get_character(character_id)
     if not character:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Character not found: {character_id}"
-        )
+        raise HTTPException(status_code=404, detail=f"Character not found: {character_id}")
     character_name = character.name if character else character_id
 
-    # Get user preferences if available
+    # Get user preferences
     user_preferences = get_user_preferences(character_id, user_id)
 
-    # Initialize services for v2 mode
-    session_service = None
-    retriever = None
-    if memory_mode == "v2":
-        chromadb_manager = ChromaDBManager()
-        session_service = SessionService(chromadb_manager=chromadb_manager)
-        # 初始化记忆检索器
-        from app.services.embedding import EmbeddingService
-        embedding_service = EmbeddingService()
-        retriever = HierarchicalRetriever(
-            chromadb_manager=chromadb_manager,
-            embedding_service=embedding_service,
-        )
+    # Create chat service (version-agnostic)
+    chat_service = _create_chat_service(llm, character_service, history_service)
 
-    # Load conversation history from topic
+    # Load conversation history
     history_messages = history_service.get_history_for_chat(user_id, topic_id, character_id)
+    request_with_history = ChatRequest(
+        message=request.message,
+        character_id=character_id,
+        conversation_history=history_messages if history_messages else None,
+        stream=request.stream,
+    )
 
-    # Create chat service based on memory mode
-    if memory_mode == "v0":
-        chat_service = ChatService(
-            llm=llm,
-            character_service=character_service
-        )
-    elif memory_mode == "v2":
-        chat_service = ChatService(
-            llm=llm,
-            character_service=character_service
-        )
-    else:
-        chat_service = ChatService(
-            llm=llm,
-            character_service=character_service,
-            plugin_manager=plugin_manager
-        )
-
-    # Store full response for diary generation and saving
+    # Store full response for persistence
     full_response = []
 
     async def generate():
-        """Generate streaming response with tool calling support."""
         try:
-            # Ensure plugins are loaded
-            # Load plugins only for v1 mode (v2 uses SessionService)
-            if memory_mode == "v1":
-                if not plugin_manager.plugins:
-                    await plugin_manager.load_plugins()
-
-            # Create request with history for building messages
-            request_with_history = ChatRequest(
-                message=request.message,
-                character_id=character_id,
-                conversation_history=history_messages if history_messages else None,
-                stream=request.stream
-            )
-
-            # Retrieve relevant memories for v2 mode
-            memory_context = ""
-            if memory_mode == "v2" and retriever:
-                try:
-                    from memory.v2.retriever import SpaceType
-                    result = await retriever.retrieve(
-                        query=request.message,
-                        user=user_id,
-                        space=SpaceType.USER,
-                        limit=5
-                    )
-                    if result.matched_contexts:
-                        memory_parts = ["[相关记忆参考]"]
-                        for ctx in result.matched_contexts:
-                            content = ctx.abstract[:300] if len(ctx.abstract) > 300 else ctx.abstract
-                            memory_parts.append(f"- {content}")
-                        memory_context = "\n".join(memory_parts)
-                        logger.info(f"[Memory] Retrieved {len(result.matched_contexts)} contexts")
-                except Exception as e:
-                    logger.warning(f"[Memory] Failed to retrieve: {e}")
-
-            # Stream response (tool calling is handled internally by chat_service.chat_stream)
-            if memory_mode == "v2":
-                async for chunk in chat_service.chat_stream(
-                    request_with_history, user_preferences, user_id, memory_context, session_service, retriever
-                ):
-                    full_response.append(chunk)
-                    yield f"data: {chunk}\n\n"
-            else:
-                async for chunk in chat_service.chat_stream(request_with_history, user_preferences, user_id):
-                    full_response.append(chunk)
-                    yield f"data: {chunk}\n\n"
+            async for chunk in chat_service.chat_stream(request_with_history, user_preferences, user_id):
+                full_response.append(chunk)
+                yield f"data: {chunk}\n\n"
 
             yield "data: [DONE]\n\n"
 
-            # Save messages based on memory mode
+            # Persist messages after stream completes
             response_text = "".join(full_response)
-            if memory_mode == "v2" and session_service:
-                # Use SessionService for v2 mode (handles auto-commit)
-                await session_service.add_message(
-                    character_id=character_id,
-                    topic_id=topic_id,
-                    role="user",
-                    content=request.message,
-                    name=user_id,
-                    user_id=user_id
-                )
-                await session_service.add_message(
-                    character_id=character_id,
-                    topic_id=topic_id,
-                    role="assistant",
-                    content=response_text,
-                    name=character_name,
-                    user_id=user_id
-                )
-            else:
-                # Use history_service for v0/v1 mode
-                history_service.append_message(
-                    user_id=user_id,
-                    topic_id=topic_id,
-                    role="user",
-                    content=request.message,
-                    name=user_id,
-                    character_id=character_id
-                )
-                history_service.append_message(
-                    user_id=user_id,
-                    topic_id=topic_id,
-                    role="assistant",
-                    content=response_text,
-                    name=character_name,
-                    character_id=character_id
-                )
+            await chat_service.persist_messages(
+                character_id=character_id,
+                topic_id=topic_id,
+                user_id=user_id,
+                character_name=character_name,
+                user_message=request.message,
+                assistant_message=response_text,
+            )
         except Exception as e:
             yield f"data: [ERROR: {str(e)}]\n\n"
 
@@ -451,20 +239,73 @@ async def chat_stream(
     )
 
 
+# ─── Session lifecycle (V3 only) ─────────────────────────────
+
+class SessionCloseRequest(BaseModel):
+    character_id: str
+    topic_id: int
+
+
+@router.post("/session/close")
+async def close_session(
+    request: SessionCloseRequest,
+    user_id: str = Depends(get_mock_user_id),
+):
+    """结束会话，触发 V3 图谱维护（仅 v3 模式可用）"""
+    if memory_mode != "v3":
+        raise HTTPException(status_code=400, detail="Session close only supported in v3 mode")
+
+    from memory.factory import MemoryBackendFactory
+    from memory.v3.backend import MemoryV3Backend
+    backend = MemoryBackendFactory.get_backend()
+    if not isinstance(backend, MemoryV3Backend):
+        raise HTTPException(status_code=500, detail="Memory backend is not V3")
+
+    try:
+        result = await backend.finalize_session(request.character_id, str(request.topic_id))
+        return {"status": "finalized", "details": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Finalize failed: {str(e)}")
+
+
+# ─── Graph stats (V3 only) ────────────────────────────────────
+
+class GraphStatsRequest(BaseModel):
+    character_id: str
+
+
+@router.post("/graph/stats")
+async def graph_stats(
+    request: GraphStatsRequest,
+    user_id: str = Depends(get_mock_user_id),
+):
+    """获取 V3 图谱统计（仅 v3 模式可用）"""
+    if memory_mode != "v3":
+        raise HTTPException(status_code=400, detail="Graph stats only supported in v3 mode")
+
+    from memory.factory import MemoryBackendFactory
+    from memory.v3.backend import MemoryV3Backend
+    backend = MemoryBackendFactory.get_backend()
+    if not isinstance(backend, MemoryV3Backend):
+        raise HTTPException(status_code=500, detail="Memory backend is not V3")
+
+    try:
+        stats = await backend.get_graph_stats(request.character_id)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stats failed: {str(e)}")
+
+
+# ─── Logs ──────────────────────────────────────────────────────
+
 @router.get("/logs/today")
 async def get_today_logs():
-    """
-    Get today's chat and tool call logs.
-
-    Returns the content of today.txt which contains all logs
-    from the current day including tool calls and execution results.
-    """
+    """Get today's chat and tool call logs."""
     try:
         from app.utils.file_logger import get_log_content
         from datetime import datetime
 
-        log_content = get_log_content()  # Gets today's logs by default
-
+        log_content = get_log_content()
         return {
             "date": datetime.now().strftime("%Y-%m-%d"),
             "content": log_content,
@@ -477,16 +318,11 @@ async def get_today_logs():
 
 @router.get("/logs/list")
 async def list_logs():
-    """
-    List all available log files.
-
-    Returns a list of all archived log files with their dates.
-    """
+    """List all available log files."""
     try:
         from app.utils.file_logger import list_log_files
 
         log_files = list_log_files()
-
         return {
             "logs": [
                 {"filename": filename, "date": date_str}
@@ -500,25 +336,16 @@ async def list_logs():
 
 @router.get("/logs/{date}")
 async def get_logs_by_date(date: str):
-    """
-    Get logs for a specific date.
-
-    Path Parameters:
-    - date: Date in YYYY-MM-DD format
-
-    Returns the log content for the specified date.
-    """
+    """Get logs for a specific date (YYYY-MM-DD)."""
     try:
         from app.utils.file_logger import get_log_content
-        from datetime import datetime
 
-        # Parse date
         try:
-            target_date = datetime.strptime(date, "%Y-%m-%d")
+            datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-        log_content = get_log_content(target_date)
+        log_content = get_log_content(datetime.strptime(date, "%Y-%m-%d"))
 
         if not log_content:
             raise HTTPException(status_code=404, detail=f"No logs found for date: {date}")

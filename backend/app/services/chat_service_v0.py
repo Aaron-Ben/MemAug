@@ -13,13 +13,15 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+from app.services.base_chat_service import BaseChatService
 from app.services.llm import LLM
 from app.services.character_service import CharacterStorageService
+from app.services.chat_history_service import ChatHistoryService
 from app.models.character import UserCharacterPreference
 from app.schemas.message import ChatRequest, ChatResponse, MessageContext
 
 
-class ChatServiceV0:
+class ChatServiceV0(BaseChatService):
     """
     Simple chat service without memory system.
 
@@ -33,17 +35,12 @@ class ChatServiceV0:
     def __init__(
         self,
         llm: LLM,
-        character_service: CharacterStorageService
+        character_service: CharacterStorageService,
+        history_service: ChatHistoryService,
     ):
-        """
-        Initialize v0 chat service.
-
-        Args:
-            llm: LLM instance to use for generating responses
-            character_service: Character service for managing personalities
-        """
         self.llm = llm
         self.character_service = character_service
+        self.history_service = history_service
 
     async def chat(
         self,
@@ -132,3 +129,24 @@ class ChatServiceV0:
         messages.append({"role": "user", "content": request.message})
 
         return messages
+
+    async def persist_messages(
+        self,
+        character_id: str,
+        topic_id: int,
+        user_id: str,
+        character_name: str,
+        user_message: str,
+        assistant_message: str,
+    ) -> None:
+        """保存对话消息到历史记录"""
+        self.history_service.append_message(
+            user_id=user_id, topic_id=topic_id,
+            role="user", content=user_message,
+            name=user_id, character_id=character_id,
+        )
+        self.history_service.append_message(
+            user_id=user_id, topic_id=topic_id,
+            role="assistant", content=assistant_message,
+            name=character_name, character_id=character_id,
+        )

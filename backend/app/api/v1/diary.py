@@ -32,14 +32,14 @@ else:
 
 def _check_v1_enabled():
     """检查 v1 是否启用，未启用则抛出异常"""
-    if _current_backend.name == "v2":
-        raise HTTPException(status_code=503, detail="Diary API not available in v2 mode")
+    if _current_backend.name != "v1":
+        raise HTTPException(status_code=503, detail="Diary API not available in current memory mode")
 
 
 def _get_diary_service():
     """获取日记服务实例"""
     if DiaryFileService is None:
-        raise HTTPException(status_code=503, detail="Diary API not available in v2 mode")
+        raise HTTPException(status_code=503, detail="Diary API not available in current memory mode")
     return DiaryFileService()
 
 

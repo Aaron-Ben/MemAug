@@ -62,8 +62,10 @@ class MemoryBackendFactory:
             return
         from memory.v1 import MemoryV1Backend
         from memory.v2 import MemoryV2Backend
+        from memory.v3 import MemoryV3Backend
         cls.register("v1", MemoryV1Backend)
         cls.register("v2", MemoryV2Backend)
+        cls.register("v3", MemoryV3Backend)
         cls._registered = True
 
     @classmethod

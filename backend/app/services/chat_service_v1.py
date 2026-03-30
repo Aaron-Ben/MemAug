@@ -16,8 +16,10 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+from app.services.base_chat_service import BaseChatService
 from app.services.llm import LLM
 from app.services.character_service import CharacterStorageService
+from app.services.chat_history_service import ChatHistoryService
 from app.models.character import UserCharacterPreference
 from app.schemas.message import (
     ChatRequest,
@@ -30,7 +32,7 @@ from plugins.tool_call_parser import ToolCallParser
 from plugins.tool_executor import ToolExecutor
 
 
-class ChatService:
+class ChatServiceV1(BaseChatService):
     """
     Enhanced chat service that integrates character personalities with LLM services.
 
@@ -45,18 +47,12 @@ class ChatService:
         self,
         llm: LLM,
         character_service: CharacterStorageService,
-        plugin_manager=None
+        history_service: ChatHistoryService,
+        plugin_manager=None,
     ):
-        """
-        Initialize chat service.
-
-        Args:
-            llm: LLM instance to use for generating responses
-            character_service: Character service for managing personalities
-            plugin_manager: Optional PluginManager for tool calling
-        """
         self.llm = llm
         self.character_service = character_service
+        self.history_service = history_service
 
         # Initialize tool system if plugin_manager provided
         self.plugin_manager = plugin_manager
@@ -142,6 +138,7 @@ class ChatService:
             Response chunks
         """
         # Build initial messages
+        await self._ensure_plugins()
         messages = await self._build_messages(request, user_preferences, user_id)
 
         # Tool calling loop
@@ -346,3 +343,29 @@ class ChatService:
         return f"""{result}
 
 请根据以上工具调用结果，继续与用户对话。如果工具执行成功，请用自然的方式告知用户操作已完成，并继续对话。不要重复工具调用的技术细节。"""
+
+    async def _ensure_plugins(self) -> None:
+        """懒加载插件（仅在首次使用时加载）"""
+        if self.plugin_manager and not self.plugin_manager.plugins:
+            await self.plugin_manager.load_plugins()
+
+    async def persist_messages(
+        self,
+        character_id: str,
+        topic_id: int,
+        user_id: str,
+        character_name: str,
+        user_message: str,
+        assistant_message: str,
+    ) -> None:
+        """保存对话消息到历史记录"""
+        self.history_service.append_message(
+            user_id=user_id, topic_id=topic_id,
+            role="user", content=user_message,
+            name=user_id, character_id=character_id,
+        )
+        self.history_service.append_message(
+            user_id=user_id, topic_id=topic_id,
+            role="assistant", content=assistant_message,
+            name=character_name, character_id=character_id,
+        )

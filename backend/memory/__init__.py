@@ -20,6 +20,7 @@ from memory.factory import MemoryBackend, MemoryBackendFactory
 MEMORY_BACKEND = os.getenv("MEMORY", "v1")  # 默认 v1
 V1_ENABLED = MEMORY_BACKEND == "v1"
 V2_ENABLED = MEMORY_BACKEND == "v2"
+V3_ENABLED = MEMORY_BACKEND == "v3"
 
 
 def get_memory_backend() -> MemoryBackend:
@@ -34,4 +35,5 @@ __all__ = [
     "MEMORY_BACKEND",
     "V1_ENABLED",
     "V2_ENABLED",
+    "V3_ENABLED",
 ]
